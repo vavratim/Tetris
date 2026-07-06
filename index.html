@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Tetris</title>
 <style>
   html, body {
@@ -16,6 +17,8 @@
     background: #111827;
     font-family: 'Segoe UI', Arial, sans-serif;
     color: #e5e7eb;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing: border-box;
   }
   .wrap {
     display: flex;
@@ -24,8 +27,9 @@
     align-items: center;
     justify-content: center;
     gap: 16px;
-    width: 100vw;
+    width: 100%;
     height: 100vh;
+    height: 100dvh;
     box-sizing: border-box;
     padding: 10px;
   }
@@ -200,7 +204,7 @@
 <div class="wrap">
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v6</div>
+    <div id="versionBadge">v7</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
