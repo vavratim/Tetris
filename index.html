@@ -4,63 +4,102 @@
 <meta charset="UTF-8">
 <title>Tetris</title>
 <style>
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
   body {
     margin: 0;
     display: flex;
     justify-content: center;
     align-items: center;
-    min-height: 100vh;
     background: #111827;
     font-family: 'Segoe UI', Arial, sans-serif;
     color: #e5e7eb;
   }
   .wrap {
     display: flex;
-    gap: 24px;
-    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
+    padding: 10px;
   }
-  canvas {
+  .stage {
+    position: relative;
+    flex: 0 1 auto;
+    display: flex;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas#board {
     background: #1f2937;
     border: 3px solid #374151;
     border-radius: 6px;
     display: block;
     touch-action: none;
-  }
-  .wrap {
-    flex-wrap: wrap;
-    max-width: 480px;
+    width: auto;
+    height: auto;
+    max-height: min(96vh, 780px);
+    max-width: 62vw;
+    object-fit: contain;
   }
   .panel {
-    width: 160px;
+    flex: 0 0 auto;
+    width: 150px;
+    max-width: 30vw;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 10px;
+    height: 100%;
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 2px;
   }
   .box {
     background: #1f2937;
     border: 2px solid #374151;
     border-radius: 6px;
-    padding: 12px;
+    padding: 10px;
+    flex-shrink: 0;
   }
   .box h3 {
-    margin: 0 0 8px 0;
-    font-size: 14px;
+    margin: 0 0 6px 0;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 1px;
     color: #9ca3af;
   }
   .box .value {
-    font-size: 22px;
+    font-size: 20px;
     font-weight: bold;
   }
   #nextCanvas {
     background: #111827;
     border-radius: 4px;
+    width: 100%;
+    height: auto;
+    max-width: 100px;
   }
   .controls {
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 12px;
+    line-height: 1.5;
     color: #9ca3af;
+  }
+
+  @media (max-width: 500px) {
+    .wrap { gap: 8px; padding: 6px; }
+    .panel { width: 92px; gap: 6px; }
+    .box { padding: 6px; }
+    .box h3 { font-size: 9px; margin-bottom: 3px; }
+    .box .value { font-size: 15px; }
+    canvas#board { max-width: 66vw; }
+    button#startBtn { padding: 6px 10px; font-size: 12px; }
   }
   #overlay {
     position: absolute;
@@ -135,7 +174,7 @@
     touch-action: manipulation;
   }
   .tbtn:active { background: #4f46e5; }
-  .tbtn.wide { width: 120px; font-size: 14px; }
+  .tbtn.wide { width: 100%; font-size: 13px; height: 40px; }
 
   @media (pointer: coarse) {
     .touch-controls { display: flex; }
@@ -185,16 +224,7 @@
 
     <div class="touch-controls">
       <div class="touch-row">
-        <button class="tbtn" id="btnRotate">⟳</button>
-        <button class="tbtn" id="btnPause">⏸</button>
-      </div>
-      <div class="touch-row">
-        <button class="tbtn" id="btnLeft">←</button>
-        <button class="tbtn" id="btnDown">↓</button>
-        <button class="tbtn" id="btnRight">→</button>
-      </div>
-      <div class="touch-row">
-        <button class="tbtn wide" id="btnDrop">HARD DROP</button>
+        <button class="tbtn wide" id="btnPause">⏸ Pause</button>
       </div>
     </div>
   </div>
@@ -583,36 +613,7 @@ startBtn.addEventListener('click', () => {
   initGame();
 });
 
-// --- Touch controls: buttons ---
-function bindHold(el, action, repeatDelay, repeatRate) {
-  let repeatTimer = null, initialTimer = null;
-  const fire = () => { if (running && !paused) { action(); draw(); } };
-  el.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    fire();
-    initialTimer = setTimeout(() => {
-      repeatTimer = setInterval(fire, repeatRate);
-    }, repeatDelay);
-  }, { passive: false });
-  const clear = () => { clearTimeout(initialTimer); clearInterval(repeatTimer); };
-  el.addEventListener('touchend', clear);
-  el.addEventListener('touchcancel', clear);
-}
-
-bindHold(document.getElementById('btnLeft'), () => move(-1), 300, 100);
-bindHold(document.getElementById('btnRight'), () => move(1), 300, 100);
-bindHold(document.getElementById('btnDown'), () => softDrop(), 300, 80);
-
-document.getElementById('btnRotate').addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  if (running && !paused) { tryRotate(); draw(); }
-}, { passive: false });
-
-document.getElementById('btnDrop').addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  if (running && !paused) { hardDrop(); draw(); }
-}, { passive: false });
-
+// --- Touch controls: pause button ---
 document.getElementById('btnPause').addEventListener('touchstart', (e) => {
   e.preventDefault();
   togglePause();
@@ -621,6 +622,7 @@ document.getElementById('btnPause').addEventListener('touchstart', (e) => {
 // --- Touch controls: swipe gestures directly on the board ---
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0, swiped = false;
 const SWIPE_THRESHOLD = 24;
+const SWIPE_UP_THRESHOLD = 40;
 
 canvas.addEventListener('touchstart', (e) => {
   const t = e.touches[0];
@@ -635,15 +637,22 @@ canvas.addEventListener('touchmove', (e) => {
   const t = e.touches[0];
   const dx = t.clientX - touchStartX;
   const dy = t.clientY - touchStartY;
-  if (Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
-    move(dx > 0 ? 1 : -1);
+  if (dy < -SWIPE_UP_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
+    // swipe up = hard drop
+    hardDrop();
     draw();
-    touchStartX = t.clientX;
     swiped = true;
+    touchStartY = t.clientY;
   } else if (dy > SWIPE_THRESHOLD * 1.5 && Math.abs(dy) > Math.abs(dx)) {
+    // swipe down = soft drop
     softDrop();
     draw();
     touchStartY = t.clientY;
+    swiped = true;
+  } else if (Math.abs(dx) > SWIPE_THRESHOLD && Math.abs(dx) > Math.abs(dy)) {
+    move(dx > 0 ? 1 : -1);
+    draw();
+    touchStartX = t.clientX;
     swiped = true;
   }
 }, { passive: true });
@@ -651,7 +660,7 @@ canvas.addEventListener('touchmove', (e) => {
 canvas.addEventListener('touchend', (e) => {
   if (!running || paused) return;
   const elapsed = Date.now() - touchStartTime;
-  // quick tap with no swipe = rotate; fast short downward flick = hard drop
+  // quick tap with no swipe = rotate
   if (!swiped && elapsed < 250) {
     tryRotate();
     draw();
