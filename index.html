@@ -222,7 +222,7 @@
 <div class="wrap">
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v10</div>
+    <div id="versionBadge">v11</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
@@ -568,6 +568,19 @@ function draw() {
   ctx.fillStyle = currentBg();
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // faint vertical column guides
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < COLS; i++) {
+    const gx = i * SIZE;
+    ctx.beginPath();
+    ctx.moveTo(gx, 0);
+    ctx.lineTo(gx, ROWS * SIZE);
+    ctx.stroke();
+  }
+  ctx.restore();
+
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
       if (grid[y][x]) drawCell(ctx, x, y, grid[y][x]);
@@ -664,13 +677,14 @@ document.addEventListener('touchend', (e) => {
   lastTapTime = now;
 }, { passive: false });
 
-// --- Touch controls: finger-latching drag ---
-// Horizontal drag moves the piece to follow your finger 1:1 by column.
-// Vertical drag down soft-drops in sync with finger movement.
+// --- Touch controls ---
+// Horizontal swipe moves the piece exactly one column per swipe-width of finger travel
+// (a quick short flick = one column, no continuous 1:1 finger tracking).
+// Vertical drag down soft-drops in sync with finger movement, and locks out horizontal
+// entirely for that gesture. Lifting your finger returns to normal fall speed right away.
 // A big upward flick hard-drops. A quick tap with no drag rotates.
-// Once an axis is locked for a gesture, the other axis is ignored entirely.
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-let touchStartPosX = 0, axisLock = null, lastDragY = 0, minDragDy = 0;
+let axisLock = null, lastDragY = 0, minDragDy = 0;
 const AXIS_LOCK_THRESHOLD = 8;
 const HARD_DROP_SWIPE_UP = 55;
 
@@ -679,7 +693,6 @@ canvas.addEventListener('touchstart', (e) => {
   touchStartX = t.clientX;
   touchStartY = t.clientY;
   touchStartTime = Date.now();
-  touchStartPosX = pos.x;
   lastDragY = t.clientY;
   minDragDy = 0;
   axisLock = null;
@@ -700,10 +713,16 @@ canvas.addEventListener('touchmove', (e) => {
   const cellPx = rect.width / COLS;
 
   if (axisLock === 'x') {
-    const desiredCol = touchStartPosX + Math.round(dx / cellPx);
-    while (pos.x < desiredCol && !collide(current.cells, pos.x + 1, pos.y)) pos.x++;
-    while (pos.x > desiredCol && !collide(current.cells, pos.x - 1, pos.y)) pos.x--;
-    draw();
+    // discrete: every full column-width of travel moves exactly one column, then resets
+    if (dx > cellPx) {
+      move(1);
+      draw();
+      touchStartX = t.clientX;
+    } else if (dx < -cellPx) {
+      move(-1);
+      draw();
+      touchStartX = t.clientX;
+    }
   } else {
     minDragDy = Math.min(minDragDy, dy);
     while (t.clientY - lastDragY > cellPx) {
