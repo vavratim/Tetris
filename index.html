@@ -222,7 +222,7 @@
 <div class="wrap">
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v11</div>
+    <div id="versionBadge">v12</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
@@ -678,77 +678,57 @@ document.addEventListener('touchend', (e) => {
 }, { passive: false });
 
 // --- Touch controls ---
-// Horizontal swipe moves the piece exactly one column per swipe-width of finger travel
-// (a quick short flick = one column, no continuous 1:1 finger tracking).
-// Vertical drag down soft-drops in sync with finger movement, and locks out horizontal
-// entirely for that gesture. Lifting your finger returns to normal fall speed right away.
-// A big upward flick hard-drops. A quick tap with no drag rotates.
+// One action per touch. Once a direction is registered, it's locked until you lift.
+//   swipe left  -> move one column left (only once)
+//   swipe right -> move one column right (only once)
+//   swipe down  -> hard drop (straight to bottom)
+//   swipe up    -> hard drop as well
+//   quick tap   -> rotate
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-let axisLock = null, lastDragY = 0, minDragDy = 0;
-const AXIS_LOCK_THRESHOLD = 8;
-const HARD_DROP_SWIPE_UP = 55;
+let actionFired = false;
+const MOVE_THRESHOLD = 18;   // px of travel before a horizontal move registers
+const DROP_THRESHOLD = 28;   // px of vertical travel before a drop registers
 
 canvas.addEventListener('touchstart', (e) => {
   const t = e.touches[0];
   touchStartX = t.clientX;
   touchStartY = t.clientY;
   touchStartTime = Date.now();
-  lastDragY = t.clientY;
-  minDragDy = 0;
-  axisLock = null;
+  actionFired = false;
 }, { passive: true });
 
 canvas.addEventListener('touchmove', (e) => {
-  if (!running || paused) return;
+  if (!running || paused || actionFired) return;
   const t = e.touches[0];
   const dx = t.clientX - touchStartX;
   const dy = t.clientY - touchStartY;
 
-  if (axisLock === null) {
-    if (Math.abs(dx) < AXIS_LOCK_THRESHOLD && Math.abs(dy) < AXIS_LOCK_THRESHOLD) return;
-    axisLock = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-  }
-
-  const rect = canvas.getBoundingClientRect();
-  const cellPx = rect.width / COLS;
-
-  if (axisLock === 'x') {
-    // discrete: every full column-width of travel moves exactly one column, then resets
-    if (dx > cellPx) {
-      move(1);
-      draw();
-      touchStartX = t.clientX;
-    } else if (dx < -cellPx) {
+  // decide horizontal vs vertical by dominant axis, fire exactly once
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx <= -MOVE_THRESHOLD) {
       move(-1);
       draw();
-      touchStartX = t.clientX;
+      actionFired = true;
+    } else if (dx >= MOVE_THRESHOLD) {
+      move(1);
+      draw();
+      actionFired = true;
     }
   } else {
-    minDragDy = Math.min(minDragDy, dy);
-    while (t.clientY - lastDragY > cellPx) {
-      if (!collide(current.cells, pos.x, pos.y + 1)) {
-        pos.y++;
-        score += 1;
-        lastDragY += cellPx;
-      } else {
-        lockPiece();
-        lastDragY = t.clientY;
-        break;
-      }
+    if (dy >= DROP_THRESHOLD || dy <= -DROP_THRESHOLD) {
+      hardDrop();
+      draw();
+      actionFired = true;
     }
-    updateStats();
-    draw();
   }
 }, { passive: true });
 
 canvas.addEventListener('touchend', () => {
   if (!running || paused) return;
   const elapsed = Date.now() - touchStartTime;
-  if (axisLock === null && elapsed < 250) {
+  // quick tap with no move/drop = rotate
+  if (!actionFired && elapsed < 250) {
     tryRotate();
-    draw();
-  } else if (axisLock === 'y' && minDragDy < -HARD_DROP_SWIPE_UP) {
-    hardDrop();
     draw();
   }
 }, { passive: true });
