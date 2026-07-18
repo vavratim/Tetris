@@ -205,17 +205,15 @@
   #themeToast.show { opacity: 1; }
 
   #versionBadge {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background: rgba(0,0,0,0.55);
-    color: #9ca3af;
+    align-self: flex-start;
+    background: rgba(0,0,0,0.4);
+    color: #6b7280;
     font-size: 11px;
-    padding: 3px 8px;
+    padding: 2px 7px;
     border-radius: 10px;
     letter-spacing: 0.5px;
     pointer-events: none;
-    z-index: 5;
+    flex: 0 0 auto;
   }
 </style>
 </head>
@@ -223,6 +221,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
+      <div id="versionBadge">v28</div>
       <div class="spacer"></div>
       <div class="box stat">
         <div class="statline"><span class="lbl">Score</span><span class="num" id="score">0</span></div>
@@ -246,7 +245,6 @@
   </div>
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v26</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
