@@ -80,7 +80,7 @@
   .statline {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
+    justify-content: center;
     gap: 6px;
   }
   .statline .lbl {
@@ -144,10 +144,12 @@
     border-radius: 6px;
     display: block;
     touch-action: none;
+    height: 100%;
     width: auto;
-    height: auto;
+    aspect-ratio: 1 / 2;
     max-width: 100%;
     max-height: 100%;
+    object-fit: contain;
   }
   .controls-hint-desktop { display: none; }
   #overlay {
@@ -231,7 +233,7 @@
   </div>
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v21</div>
+    <div id="versionBadge">v22</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
