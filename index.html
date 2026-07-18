@@ -36,7 +36,6 @@
     background: #111827;
     font-family: 'Segoe UI', Arial, sans-serif;
     color: #e5e7eb;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     box-sizing: border-box;
   }
   .wrap {
@@ -45,12 +44,15 @@
     flex-wrap: nowrap;
     align-items: stretch;
     justify-content: center;
-    gap: 16px;
+    gap: 14px;
     width: 100%;
     height: 100vh;
     height: 100dvh;
     box-sizing: border-box;
-    padding: 10px 10px 18px 10px;
+    padding-top: calc(8px + env(safe-area-inset-top));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    padding-left: calc(8px + env(safe-area-inset-left));
+    padding-right: calc(8px + env(safe-area-inset-right));
   }
   .wrap.swapped {
     flex-direction: row-reverse;
@@ -106,6 +108,12 @@
     font-size: 15px;
     font-weight: bold;
   }
+  .box .value.themeval {
+    font-size: 10px;
+    line-height: 1.1;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
   #nextCanvas {
     background: #111827;
     border-radius: 4px;
@@ -120,13 +128,23 @@
   }
 
   @media (max-width: 500px) {
-    .wrap { gap: 6px; padding: 6px; }
-    .panel { width: 54px; gap: 5px; max-width: 16vw; }
-    .box { padding: 4px 3px; }
+    .wrap {
+      gap: 6px;
+      padding-top: calc(6px + env(safe-area-inset-top));
+      padding-bottom: calc(8px + env(safe-area-inset-bottom));
+      padding-left: calc(6px + env(safe-area-inset-left));
+      padding-right: calc(6px + env(safe-area-inset-right));
+    }
+    .panel { width: 58px; gap: 5px; max-width: 17vw; }
+    .box { padding: 5px 3px; }
     .box h3 { font-size: 7px; margin-bottom: 2px; letter-spacing: 0; }
-    .box .value { font-size: 12px; }
+    .box .value { font-size: 13px; }
+    .box .value.themeval { font-size: 9px; }
     canvas#board { max-width: 80vw; }
     #nextCanvas { max-width: 46px; }
+    .tbtn { height: 44px; font-size: 15px; }
+    .tbtn.wide { height: 40px; font-size: 10px; }
+    .touch-row { gap: 6px; }
   }
   #overlay {
     position: absolute;
@@ -193,7 +211,8 @@
     flex-direction: column;
     gap: 8px;
     margin-top: auto;
-    padding-top: 10px;
+    padding-top: 12px;
+    padding-bottom: 4px;
     user-select: none;
     -webkit-user-select: none;
   }
@@ -207,16 +226,17 @@
     color: white;
     border: none;
     border-radius: 8px;
-    font-size: 20px;
-    width: 56px;
-    height: 48px;
+    font-size: 16px;
+    width: 100%;
+    height: 42px;
     display: flex;
     align-items: center;
     justify-content: center;
     touch-action: manipulation;
   }
   .tbtn:active { background: #4f46e5; }
-  .tbtn.wide { width: 100%; font-size: 13px; height: 40px; }
+  .tbtn.wide { width: 100%; font-size: 11px; height: 38px; }
+  .touch-row { flex-direction: column; }
 
   @media (pointer: coarse) {
     .touch-controls { display: flex; }
@@ -228,7 +248,7 @@
 <div class="wrap">
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v17</div>
+    <div id="versionBadge">v19</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
@@ -255,7 +275,7 @@
     </div>
     <div class="box">
       <h3>Theme</h3>
-      <div class="value" id="themeName" style="font-size:16px;">Classic</div>
+      <div class="value themeval" id="themeName">Classic</div>
     </div>
     <div class="box">
       <h3>Next</h3>
