@@ -76,7 +76,8 @@
     justify-content: center;
     box-sizing: border-box;
   }
-  .box.stat { flex: 1 1 0; gap: 4px; }
+  .box.stat { flex: 0 0 auto; gap: 4px; min-width: 62px; }
+  .spacer { flex: 1 1 auto; }
   .statline {
     display: flex;
     align-items: baseline;
@@ -234,7 +235,7 @@
   </div>
   <div class="stage">
     <canvas id="board" width="300" height="600"></canvas>
-    <div id="versionBadge">v22</div>
+    <div id="versionBadge">v23</div>
     <div id="themeToast"></div>
     <div id="overlay">
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
