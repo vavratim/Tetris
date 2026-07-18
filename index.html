@@ -939,16 +939,15 @@ canvas.addEventListener('touchend', () => {
 }, { passive: true });
 
 // --- Fit the board to the largest size that fits the stage (keeps 1:2 ratio) ---
+const stageEl = document.querySelector('.stage');
 function fitBoard() {
-  const stage = document.querySelector('.stage');
-  const availW = stage.clientWidth;
-  const availH = stage.clientHeight;
+  const availW = stageEl.clientWidth;
+  const availH = stageEl.clientHeight;
   if (availW <= 0 || availH <= 0) return;
   const ratio = COLS / ROWS; // width / height = 0.5
-  // try filling height first
+  // fill the full height; if that overflows width, fall back to width
   let h = availH;
   let w = h * ratio;
-  // if too wide, fill width instead
   if (w > availW) {
     w = availW;
     h = w / ratio;
@@ -957,6 +956,12 @@ function fitBoard() {
   canvas.style.height = Math.floor(h) + 'px';
 }
 
+// ResizeObserver fires as soon as the stage has (or changes) its real size,
+// which avoids the "measured too early" problem.
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => fitBoard());
+  ro.observe(stageEl);
+}
 window.addEventListener('resize', fitBoard);
 window.addEventListener('orientationchange', () => setTimeout(fitBoard, 100));
 
@@ -973,9 +978,10 @@ overlayText.textContent = 'Tetris';
 overlayBtn.textContent = 'Start';
 overlay.style.display = 'flex';
 
-// re-fit shortly after load in case fonts/safe-areas shift layout
-setTimeout(fitBoard, 150);
-requestAnimationFrame(gameLoop);
+// extra re-fits to catch late layout shifts (fonts, safe-area insets, dvh)
+setTimeout(fitBoard, 100);
+setTimeout(fitBoard, 400);
+requestAnimationFrame(() => { fitBoard(); requestAnimationFrame(gameLoop); });
 </script>
 </body>
 </html>
