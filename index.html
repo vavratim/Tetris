@@ -215,13 +215,86 @@
     pointer-events: none;
     flex: 0 0 auto;
   }
+  #infoBtn {
+    align-self: flex-start;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: #374151;
+    color: #e5e7eb;
+    font-size: 13px;
+    font-weight: bold;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #infoBtn:active { background: #4f46e5; }
+  #infoModal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 20px;
+  }
+  #infoModal.show { display: flex; }
+  .info-card {
+    background: #1f2937;
+    border: 2px solid #374151;
+    border-radius: 12px;
+    padding: 18px 20px;
+    max-width: 320px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .info-card h2 {
+    margin: 0 0 12px 0;
+    font-size: 18px;
+    text-align: center;
+  }
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 14px;
+    padding: 5px 0;
+    color: #e5e7eb;
+  }
+  .info-row span:last-child { color: #93c5fd; font-weight: bold; white-space: nowrap; }
+  .info-sep { height: 1px; background: #374151; margin: 8px 0; }
+  .info-note {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-top: 12px;
+    line-height: 1.5;
+  }
+  #infoClose {
+    margin-top: 16px;
+    width: 100%;
+    background: #4f46e5;
+    color: white;
+    border: none;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  #infoClose:active { background: #6366f1; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v28</div>
+      <div id="versionBadge">v30</div>
+      <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
         <div class="statline"><span class="lbl">Score</span><span class="num" id="score">0</span></div>
@@ -250,6 +323,21 @@
       <div id="overlayText" style="font-size:24px;font-weight:bold;">Paused</div>
       <div id="overlayScores" style="font-size:13px;line-height:1.7;color:#d1d5db;margin:4px 0;"></div>
       <button id="overlayBtn">Resume</button>
+    </div>
+  </div>
+  <div id="infoModal">
+    <div class="info-card">
+      <h2>Scoring</h2>
+      <div class="info-row"><span>Single line</span><span>100 × level</span></div>
+      <div class="info-row"><span>Double</span><span>300 × level</span></div>
+      <div class="info-row"><span>Triple</span><span>500 × level</span></div>
+      <div class="info-row"><span>Tetris (4 lines)</span><span>800 × level</span></div>
+      <div class="info-row"><span>Soft drop</span><span>1 / row</span></div>
+      <div class="info-row"><span>Hard drop</span><span>2 / row</span></div>
+      <div class="info-sep"></div>
+      <div class="info-row"><span>Level up</span><span>every 10 lines</span></div>
+      <div class="info-note">Higher level = faster fall + bigger score multiplier. Themes change every 500 points and loop.</div>
+      <button id="infoClose">Got it</button>
     </div>
   </div>
 </div>
@@ -286,7 +374,21 @@ const THEMES = [
   // Amber CRT / retro arcade single-hue
   { name: 'Amber', bg: '#180f00', style: 'glow', anim: 'sweep', colors: { I: '#ffb000', J: '#ff9500', L: '#ffc233', O: '#ffd966', S: '#e8890c', T: '#ffbf47', Z: '#cc7a00' } },
   // Bold primary blocks on stark background (Bauhaus)
-  { name: 'Bauhaus', bg: '#111111', style: 'bevel', anim: 'flash', colors: { I: '#e63946', J: '#1d3557', L: '#f1a208', O: '#fee440', S: '#2a9d8f', T: '#3a86ff', Z: '#e63946' } }
+  { name: 'Bauhaus', bg: '#111111', style: 'bevel', anim: 'flash', colors: { I: '#e63946', J: '#1d3557', L: '#f1a208', O: '#fee440', S: '#2a9d8f', T: '#3a86ff', Z: '#e63946' } },
+  // --- Neon-heavy ---
+  { name: 'Cyberpunk', bg: '#05010a', style: 'glow', anim: 'pulse', colors: { I: '#00f0ff', J: '#0066ff', L: '#ff6a00', O: '#fee600', S: '#00ff9f', T: '#ff00a0', Z: '#ff1744' } },
+  { name: 'Toxic', bg: '#0a1200', style: 'glow', anim: 'pulse', colors: { I: '#39ff14', J: '#00ff88', L: '#ccff00', O: '#f6ff00', S: '#7cff00', T: '#00ffcc', Z: '#afff00' } },
+  { name: 'Blacklight', bg: '#0a0018', style: 'glow', anim: 'pulse', colors: { I: '#b388ff', J: '#7c4dff', L: '#e040fb', O: '#ea80fc', S: '#c77dff', T: '#9d00ff', Z: '#d500f9' } },
+  { name: 'Laser', bg: '#12000a', style: 'glow', anim: 'sweep', colors: { I: '#ff0055', J: '#ff2d78', L: '#ff5e00', O: '#ffd000', S: '#ff0088', T: '#ff004c', Z: '#ff3caa' } },
+  { name: 'Electric', bg: '#000814', style: 'glow', anim: 'pulse', colors: { I: '#00e5ff', J: '#2979ff', L: '#00b0ff', O: '#40c4ff', S: '#18ffff', T: '#448aff', Z: '#0091ea' } },
+  // --- Monochrome ---
+  { name: 'Deep Blue', bg: '#00040d', style: 'bevel', anim: 'flash', colors: { I: '#dbeafe', J: '#3b82f6', L: '#93c5fd', O: '#bfdbfe', S: '#60a5fa', T: '#2563eb', Z: '#1e40af' } },
+  { name: 'Crimson', bg: '#0d0000', style: 'bevel', anim: 'flash', colors: { I: '#fecaca', J: '#ef4444', L: '#fca5a5', O: '#fee2e2', S: '#f87171', T: '#dc2626', Z: '#991b1b' } },
+  { name: 'Gold', bg: '#0a0800', style: 'chrome', anim: 'shimmer', colors: { I: '#fff4c2', J: '#d4af37', L: '#ffe066', O: '#ffd700', S: '#e6be5a', T: '#b8860b', Z: '#8c6d1f' } },
+  { name: 'Slate', bg: '#0a0c10', style: 'chrome', anim: 'shimmer', colors: { I: '#e2e8f0', J: '#94a3b8', L: '#cbd5e1', O: '#f1f5f9', S: '#64748b', T: '#475569', Z: '#334155' } },
+  // --- Creative ---
+  { name: 'Aurora', bg: '#001018', style: 'glass', anim: 'shatter', colors: { I: '#4ade80', J: '#22d3ee', L: '#a3e635', O: '#5eead4', S: '#34d399', T: '#818cf8', Z: '#c084fc' } },
+  { name: 'Sakura', bg: '#1a0510', style: 'glass', anim: 'shatter', colors: { I: '#ffd7e6', J: '#ff8fb3', L: '#ffc2d4', O: '#fff0f5', S: '#ff9ec7', T: '#f06292', Z: '#ffb7c5' } }
 ];
 const THEME_INTERVAL = 500; // points per theme change
 let themeIndex = 0;
@@ -324,8 +426,9 @@ let grid, current, next, pos, score, lines, level, dropInterval, dropTimer, last
 function initGame() {
   grid = Array.from({length: ROWS}, () => Array(COLS).fill(null));
   score = 0; lines = 0; level = 1;
-  themeIndex = 0;
-  COLORS = THEMES[0].colors;
+  lastThemeBand = 0;
+  themeIndex = Math.floor(Math.random() * THEMES.length);
+  COLORS = THEMES[themeIndex].colors;
   dropInterval = 800;
   current = randomPiece();
   next = randomPiece();
@@ -371,9 +474,16 @@ function updateStats() {
   checkTheme();
 }
 
+let lastThemeBand = 0;
 function checkTheme() {
-  const idx = Math.min(THEMES.length - 1, Math.floor(score / THEME_INTERVAL));
-  if (idx !== themeIndex) {
+  const band = Math.floor(score / THEME_INTERVAL);
+  if (band !== lastThemeBand) {
+    lastThemeBand = band;
+    // pick a random theme different from the current one
+    let idx = themeIndex;
+    if (THEMES.length > 1) {
+      while (idx === themeIndex) idx = Math.floor(Math.random() * THEMES.length);
+    }
     themeIndex = idx;
     COLORS = THEMES[themeIndex].colors;
     current.color = COLORS[current.key];
@@ -833,6 +943,21 @@ overlayBtn.addEventListener('click', () => {
 const pauseBtn = document.getElementById('btnPause');
 pauseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); togglePause(); });
 pauseBtn.addEventListener('click', (e) => { e.preventDefault(); togglePause(); });
+
+// --- Scoring info modal ---
+const infoModal = document.getElementById('infoModal');
+function openInfo() {
+  if (running && !paused) togglePause();
+  infoModal.classList.add('show');
+}
+function closeInfo() { infoModal.classList.remove('show'); }
+const infoBtn = document.getElementById('infoBtn');
+infoBtn.addEventListener('touchstart', (e) => { e.preventDefault(); openInfo(); });
+infoBtn.addEventListener('click', (e) => { e.preventDefault(); openInfo(); });
+const infoCloseBtn = document.getElementById('infoClose');
+infoCloseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); closeInfo(); });
+infoCloseBtn.addEventListener('click', (e) => { e.preventDefault(); closeInfo(); });
+infoModal.addEventListener('click', (e) => { if (e.target === infoModal) closeInfo(); });
 
 function toggleSwap() {
   document.querySelector('.wrap').classList.toggle('swapped');
