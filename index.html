@@ -294,7 +294,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v34</div>
+      <div id="versionBadge">v35</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -677,9 +677,9 @@ window.addEventListener('click', enableTilt, { once: false });
 let renderer, scene, camera, boardGroup, envMap;
 let cubePool = [], waterPool = [], surfPool = [];
 let liquidTilt = 0, liquidTiltTarget = 0, tiltReady = false;
-const CUBE_GEO = new THREE.BoxGeometry(0.88, 0.88, 0.88);
-const WATER_GEO = new THREE.BoxGeometry(0.82, 1, 0.82);
-const SURF_GEO = new THREE.BoxGeometry(0.84, 0.04, 0.84);
+const CUBE_GEO = new THREE.BoxGeometry(0.85, 0.85, 0.9);
+const WATER_GEO = new THREE.BoxGeometry(0.78, 1, 0.78);
+const SURF_GEO = new THREE.BoxGeometry(0.8, 0.04, 0.8);
 let backPanel, gridLines;
 
 function hexToNum(hex) {
@@ -734,7 +734,7 @@ function initThree() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  renderer.toneMappingExposure = 0.9;
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(46, 0.5, 0.1, 200);
@@ -745,16 +745,16 @@ function initThree() {
   boardGroup.rotation.x = 0.2;      // tilt forward a bit
   scene.add(boardGroup);
 
-  // lighting — kept moderate so colors stay saturated and faces show shading
-  scene.add(new THREE.AmbientLight(0xffffff, 0.32));
-  const key = new THREE.DirectionalLight(0xffffff, 0.62);
-  key.position.set(6, 12, 14);
+  // lighting — angled key dominates for face definition; minimal frontal fill
+  scene.add(new THREE.AmbientLight(0xffffff, 0.26));
+  const key = new THREE.DirectionalLight(0xffffff, 0.7);
+  key.position.set(7, 13, 10);
   scene.add(key);
-  const rim = new THREE.DirectionalLight(0x99bbff, 0.32);
-  rim.position.set(-8, 4, 6);
+  const rim = new THREE.DirectionalLight(0x99bbff, 0.3);
+  rim.position.set(-9, 3, 5);
   scene.add(rim);
-  const fill = new THREE.PointLight(0xffffff, 0.22, 100);
-  fill.position.set(0, 0, 18);
+  const fill = new THREE.PointLight(0xffffff, 0.1, 100);
+  fill.position.set(3, 2, 16);
   scene.add(fill);
 
   envMap = makeEnvMap();
