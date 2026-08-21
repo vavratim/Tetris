@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Tetris</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -293,7 +294,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v30</div>
+      <div id="versionBadge">v34</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -345,7 +346,6 @@
 <script>
 const COLS = 10, ROWS = 20, SIZE = 30;
 const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('nextCanvas');
 const nctx = nextCanvas.getContext('2d');
 const overlay = document.getElementById('overlay');
@@ -392,6 +392,7 @@ const THEMES = [
 ];
 const THEME_INTERVAL = 500; // points per theme change
 let themeIndex = 0;
+let lastThemeBand = 0;
 let COLORS = THEMES[0].colors;
 
 const SHAPES = {
@@ -436,6 +437,7 @@ function initGame() {
   running = true; paused = false; gameOver = false;
   clearing = false; clearRows = [];
   scoreRecorded = false;
+  userRotX = 0; userRotY = 0; userRotZ = 0;
   document.getElementById('overlayScores').innerHTML = '';
   updateStats();
   refreshBest();
@@ -474,7 +476,6 @@ function updateStats() {
   checkTheme();
 }
 
-let lastThemeBand = 0;
 function checkTheme() {
   const band = Math.floor(score / THEME_INTERVAL);
   if (band !== lastThemeBand) {
@@ -641,6 +642,275 @@ function tryRotate() {
   }
 }
 
+function handleOrientation(e) {
+  // gamma = left/right tilt in degrees (portrait). Positive = tilt right.
+  let g = e.gamma || 0;
+  g = Math.max(-45, Math.min(45, g));
+  // liquid leans opposite to the tilt direction (gravity), scaled & clamped
+  liquidTiltTarget = -(g * Math.PI / 180) * 0.8;
+}
+
+function enableTilt() {
+  if (tiltReady) return;
+  const DOE = window.DeviceOrientationEvent;
+  if (!DOE) return;
+  if (typeof DOE.requestPermission === 'function') {
+    // iOS 13+ requires a permission request from a user gesture
+    DOE.requestPermission().then((state) => {
+      if (state === 'granted') {
+        window.addEventListener('deviceorientation', handleOrientation);
+        tiltReady = true;
+      }
+    }).catch(() => {});
+  } else {
+    window.addEventListener('deviceorientation', handleOrientation);
+    tiltReady = true;
+  }
+}
+// request on the first user interaction (iOS gesture requirement)
+window.addEventListener('touchend', enableTilt, { once: false });
+window.addEventListener('click', enableTilt, { once: false });
+
+// ============================================================
+//  THREE.JS 3D BOARD RENDERER
+// ============================================================
+let renderer, scene, camera, boardGroup, envMap;
+let cubePool = [], waterPool = [], surfPool = [];
+let liquidTilt = 0, liquidTiltTarget = 0, tiltReady = false;
+const CUBE_GEO = new THREE.BoxGeometry(0.88, 0.88, 0.88);
+const WATER_GEO = new THREE.BoxGeometry(0.82, 1, 0.82);
+const SURF_GEO = new THREE.BoxGeometry(0.84, 0.04, 0.84);
+let backPanel, gridLines;
+
+function hexToNum(hex) {
+  let c = hex.replace('#','');
+  if (c.length === 3) c = c.split('').map(ch=>ch+ch).join('');
+  return parseInt(c, 16);
+}
+
+function makeEnvMap() {
+  // procedural gradient environment for metallic reflections (mercury/chrome/gold)
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 128;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 128);
+  grd.addColorStop(0.0, '#dfe8ff');
+  grd.addColorStop(0.35, '#8aa0c0');
+  grd.addColorStop(0.5, '#4b5a70');
+  grd.addColorStop(0.65, '#222a38');
+  grd.addColorStop(1.0, '#05070c');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 16, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const rt = pmrem.fromEquirectangular(tex);
+  tex.dispose();
+  pmrem.dispose();
+  return rt.texture;
+}
+
+function makeCubeMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0xffffff, metalness: 0.1, roughness: 0.5,
+    transparent: true, opacity: 1, envMap: envMap, envMapIntensity: 1
+  });
+}
+function makeWaterMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0x3399ff, metalness: 0, roughness: 0.15,
+    transparent: true, opacity: 0.82
+  });
+}
+function makeSurfMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0xffffff, metalness: 0, roughness: 0.1,
+    transparent: true, opacity: 0.9, emissive: 0x111111
+  });
+}
+
+function initThree() {
+  renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  scene = new THREE.Scene();
+
+  camera = new THREE.PerspectiveCamera(46, 0.5, 0.1, 200);
+  camera.position.set(0, 0, 27);
+  camera.lookAt(0, 0, 0);
+
+  boardGroup = new THREE.Group();
+  boardGroup.rotation.x = 0.2;      // tilt forward a bit
+  scene.add(boardGroup);
+
+  // lighting — kept moderate so colors stay saturated and faces show shading
+  scene.add(new THREE.AmbientLight(0xffffff, 0.32));
+  const key = new THREE.DirectionalLight(0xffffff, 0.62);
+  key.position.set(6, 12, 14);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x99bbff, 0.32);
+  rim.position.set(-8, 4, 6);
+  scene.add(rim);
+  const fill = new THREE.PointLight(0xffffff, 0.22, 100);
+  fill.position.set(0, 0, 18);
+  scene.add(fill);
+
+  envMap = makeEnvMap();
+
+  // back panel for depth + faint column guides (kept very dark for contrast)
+  const panelMat = new THREE.MeshStandardMaterial({ color: 0x04060a, metalness: 0.2, roughness: 0.95 });
+  backPanel = new THREE.Mesh(new THREE.PlaneGeometry(COLS + 0.4, ROWS + 0.4), panelMat);
+  backPanel.position.z = -0.6;
+  boardGroup.add(backPanel);
+
+  const linePts = [];
+  for (let i = 1; i < COLS; i++) {
+    const x = i - COLS / 2;
+    linePts.push(new THREE.Vector3(x, ROWS / 2, -0.55), new THREE.Vector3(x, -ROWS / 2, -0.55));
+  }
+  for (let j = 1; j < ROWS; j++) {
+    const y = j - ROWS / 2;
+    linePts.push(new THREE.Vector3(-COLS / 2, y, -0.55), new THREE.Vector3(COLS / 2, y, -0.55));
+  }
+  const lineGeo = new THREE.BufferGeometry().setFromPoints(linePts);
+  gridLines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06 }));
+  boardGroup.add(gridLines);
+
+  // pools
+  for (let i = 0; i < COLS * ROWS + 8; i++) {
+    const cube = new THREE.Mesh(CUBE_GEO, makeCubeMaterial());
+    cube.visible = false;
+    boardGroup.add(cube);
+    cubePool.push(cube);
+
+    const water = new THREE.Mesh(WATER_GEO, makeWaterMaterial());
+    water.visible = false;
+    boardGroup.add(water);
+    waterPool.push(water);
+
+    const surf = new THREE.Mesh(SURF_GEO, makeSurfMaterial());
+    surf.visible = false;
+    boardGroup.add(surf);
+    surfPool.push(surf);
+  }
+}
+
+// gather all visible cells (locked grid + active piece) as {x,y,color,clearing}
+function collectCells() {
+  const cells = [];
+  const clearSet = clearing ? new Set(clearRows) : null;
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (grid[y][x]) cells.push({ x, y, color: grid[y][x], clr: clearSet ? clearSet.has(y) : false });
+    }
+  }
+  if (!clearing) {
+    for (const [cx, cy] of current.cells) {
+      const x = cx + pos.x, y = cy + pos.y;
+      if (y >= 0) cells.push({ x, y, color: current.color, clr: false });
+    }
+  }
+  return cells;
+}
+
+function renderBoard3D(time) {
+  if (!renderer) return;
+  const theme = THEMES[themeIndex];
+  const style = theme.style;
+  // darken the background well below block brightness for strong contrast
+  const bg = new THREE.Color(hexToNum(theme.bg));
+  bg.multiplyScalar(0.32);
+  scene.background = bg;
+
+  // smoothly ease the liquid tilt toward the device-orientation target
+  liquidTilt += (liquidTiltTarget - liquidTilt) * 0.1;
+
+  const clearP = clearing ? Math.min(1, (performance.now() - clearStart) / clearDuration) : 0;
+  const cells = collectCells();
+  let ci = 0;
+
+  for (const cell of cells) {
+    const px = cell.x - (COLS - 1) / 2;
+    const py = (ROWS - 1) / 2 - cell.y;
+    const colNum = hexToNum(cell.color);
+    const cube = cubePool[ci];
+    const water = waterPool[ci];
+    const surf = surfPool[ci];
+    cube.visible = true;
+    cube.position.set(px, py, 0);
+    cube.rotation.set(0, 0, 0);
+    cube.scale.set(1, 1, 1);
+    const m = cube.material;
+    m.color.setHex(colNum);
+    m.emissive.setHex(0x000000);
+    m.emissiveIntensity = 1;
+    m.opacity = 1;
+    water.visible = false;
+    surf.visible = false;
+
+    if (style === 'chrome') {
+      // liquid mercury / polished metal
+      m.metalness = 1.0;
+      m.roughness = 0.12;
+      m.envMapIntensity = 1.4;
+    } else if (style === 'glow') {
+      // neon: emissive with a gentle pulse (kept in range so it doesn't blow out)
+      m.metalness = 0.0;
+      m.roughness = 0.5;
+      m.color.setHex(colNum);
+      m.emissive.setHex(colNum);
+      m.emissiveIntensity = 0.45 + 0.15 * Math.sin(time * 0.004 + cell.x + cell.y);
+    } else if (style === 'glass') {
+      // translucent box ~75% full of wobbling water that responds to phone tilt
+      m.metalness = 0.0;
+      m.roughness = 0.08;
+      m.opacity = 0.18;
+      const f = 0.75 + 0.05 * Math.sin(time * 0.003 + cell.x * 0.7 + cell.y * 0.5);
+      water.visible = true;
+      water.material.color.setHex(colNum);
+      water.position.set(px, py - 0.46 * (1 - f), 0);
+      water.scale.set(1, Math.max(0.05, f * 0.9), 1);
+      water.rotation.z = liquidTilt;          // liquid leans with gravity as you tilt
+      surf.visible = true;
+      surf.material.color.setHex(colNum);
+      surf.material.emissive.setHex(colNum);
+      surf.material.emissiveIntensity = 0.4;
+      surf.position.set(px, py - 0.46 * (1 - f) + f * 0.45, 0);
+      surf.rotation.z = liquidTilt;           // surface line tilts to match
+    } else {
+      // bevel: matte plastic block
+      m.metalness = 0.05;
+      m.roughness = 0.72;
+      m.envMapIntensity = 0.25;
+    }
+
+    // clear animation: cleared rows flash bright and pop
+    if (cell.clr) {
+      const pop = 1 + 0.25 * Math.sin(clearP * Math.PI);
+      cube.scale.set(pop, pop, pop);
+      m.emissive.setHex(0xffffff);
+      m.emissiveIntensity = Math.sin(clearP * Math.PI) * (clearCount >= 4 ? 2.2 : 1.3);
+      m.opacity = 1 - clearP * 0.3;
+    }
+    ci++;
+  }
+  for (let k = ci; k < cubePool.length; k++) {
+    cubePool[k].visible = false;
+    waterPool[k].visible = false;
+    surfPool[k].visible = false;
+  }
+
+  // base tilt + user two-finger orbit + subtle idle sway
+  boardGroup.rotation.x = BASE_TILT_X + userRotX;
+  boardGroup.rotation.y = userRotY + 0.05 * Math.sin(time * 0.0004);
+  boardGroup.rotation.z = userRotZ;
+  renderer.render(scene, camera);
+}
+
+
+
 function shade(hex, amt) {
   // amt: -1..1, negative darkens, positive lightens
   let c = hex.replace('#','');
@@ -749,125 +1019,8 @@ function drawCell(c, x, y, color, size) {
   }
 }
 
-function drawClearAnim(p) {
-  const anim = THEMES[themeIndex].anim || 'flash';
-  const big = clearCount >= 4;        // full Tetris
-  const mid = clearCount === 3;
-  const boardW = COLS * SIZE, boardH = ROWS * SIZE;
-  const fade = 1 - p;
-
-  ctx.save();
-  if (anim === 'flash') {
-    // white bars fading out; full-board flash on Tetris
-    ctx.globalAlpha = fade * (big ? 0.95 : mid ? 0.7 : 0.55);
-    ctx.fillStyle = '#ffffff';
-    for (const row of clearRows) ctx.fillRect(0, row * SIZE, boardW, SIZE);
-    if (big) {
-      ctx.globalAlpha = fade * 0.25;
-      ctx.fillRect(0, 0, boardW, boardH);
-    }
-  } else if (anim === 'pulse') {
-    // additive neon bloom on cleared rows
-    ctx.globalCompositeOperation = 'lighter';
-    const pulse = Math.sin(p * Math.PI); // rise then fall
-    ctx.globalAlpha = pulse * (big ? 0.9 : mid ? 0.6 : 0.45);
-    ctx.shadowColor = '#ffffff';
-    ctx.shadowBlur = big ? 30 : 16;
-    ctx.fillStyle = '#ffffff';
-    for (const row of clearRows) ctx.fillRect(0, row * SIZE, boardW, SIZE);
-  } else if (anim === 'sweep') {
-    // bright band sweeps across the cleared rows
-    const bandW = SIZE * 2.4;
-    const travel = boardW + bandW;
-    const x = p * travel - bandW;
-    const grad = ctx.createLinearGradient(x, 0, x + bandW, 0);
-    grad.addColorStop(0, 'rgba(255,255,255,0)');
-    grad.addColorStop(0.5, big ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.7)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grad;
-    for (const row of clearRows) ctx.fillRect(0, row * SIZE, boardW, SIZE);
-    if (big) {
-      // second trailing band for extra flash on Tetris
-      const x2 = (p * travel - bandW) * 0.6;
-      const g2 = ctx.createLinearGradient(x2, 0, x2 + bandW, 0);
-      g2.addColorStop(0, 'rgba(255,255,255,0)');
-      g2.addColorStop(0.5, 'rgba(255,255,255,0.4)');
-      g2.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = g2;
-      for (const row of clearRows) ctx.fillRect(0, row * SIZE, boardW, SIZE);
-    }
-  } else if (anim === 'shimmer') {
-    // metallic diagonal sheen sweeping across rows
-    const bandW = SIZE * 3;
-    const x = p * (boardW + bandW) - bandW;
-    const grad = ctx.createLinearGradient(x, 0, x + bandW, boardH);
-    grad.addColorStop(0, 'rgba(255,255,255,0)');
-    grad.addColorStop(0.4, 'rgba(200,220,255,0.5)');
-    grad.addColorStop(0.5, big ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.8)');
-    grad.addColorStop(0.6, 'rgba(200,220,255,0.5)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grad;
-    for (const row of clearRows) ctx.fillRect(0, row * SIZE, boardW, SIZE);
-  } else if (anim === 'shatter') {
-    // cells shrink, drift, and fade like breaking glass
-    for (const row of clearRows) {
-      for (let x = 0; x < COLS; x++) {
-        const base = grid[row][x] || '#ffffff';
-        // erase original cell
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = currentBg();
-        ctx.fillRect(x * SIZE, row * SIZE, SIZE, SIZE);
-        // shrinking fragment
-        const s = SIZE * (1 - p) * 0.9;
-        const jitter = (((x * 37 + row * 91) % 13) - 6) * p * 2.2;
-        const cx = x * SIZE + (SIZE - s) / 2 + jitter;
-        const cy = row * SIZE + (SIZE - s) / 2 + p * p * 26;
-        ctx.globalAlpha = (1 - p) * (big ? 1 : 0.85);
-        ctx.fillStyle = base;
-        ctx.fillRect(cx, cy, s, s);
-        ctx.globalAlpha = (1 - p) * 0.6;
-        ctx.fillStyle = shade(base, 0.5);
-        ctx.fillRect(cx, cy, s, Math.max(1, s * 0.3));
-      }
-    }
-  }
-  ctx.restore();
-}
-
 function draw() {
-  ctx.fillStyle = currentBg();
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // faint vertical column guides
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-  ctx.lineWidth = 1;
-  for (let i = 1; i < COLS; i++) {
-    const gx = i * SIZE;
-    ctx.beginPath();
-    ctx.moveTo(gx, 0);
-    ctx.lineTo(gx, ROWS * SIZE);
-    ctx.stroke();
-  }
-  ctx.restore();
-
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      if (grid[y][x]) drawCell(ctx, x, y, grid[y][x]);
-    }
-  }
-
-  for (const [cx, cy] of current.cells) {
-    const x = cx + pos.x, y = cy + pos.y;
-    if (y >= 0) drawCell(ctx, x, y, current.color);
-  }
-
-  if (clearing) {
-    const p = Math.min(1, (performance.now() - clearStart) / clearDuration);
-    drawClearAnim(p);
-  }
-
-  // next piece preview
+  // 2D next-piece preview (kept simple)
   nctx.fillStyle = '#111827';
   nctx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
   const cells = next.cells;
@@ -878,6 +1031,7 @@ function draw() {
   for (const [cx, cy] of cells) {
     drawCell(nctx, cx + offX + 0.5, cy + offY + 0.5, next.color);
   }
+  // 3D board is rendered every frame in the animation loop via renderBoard3D()
 }
 
 function gameLoop(time) {
@@ -888,7 +1042,6 @@ function gameLoop(time) {
       if (performance.now() - clearStart >= clearDuration) {
         finishClear();
       }
-      draw();
     } else {
       dropTimer = (dropTimer || 0) + delta;
       if (dropTimer > dropInterval) {
@@ -899,9 +1052,11 @@ function gameLoop(time) {
           lockPiece();
         }
       }
-      draw();
     }
+    draw();
   }
+  // always render the 3D scene so materials/water/reflections stay lively
+  renderBoard3D(time);
   lastTime = time;
   requestAnimationFrame(gameLoop);
 }
@@ -991,7 +1146,25 @@ const AXIS_LOCK_THRESHOLD = 8;
 const HARD_DROP_SWIPE_UP = 55;
 const H_STEP_PX = 22;  // finger travel that equals one column of horizontal movement
 
+// --- Board orientation: base tilt + user orbit (two-finger) ---
+const BASE_TILT_X = 0.2;
+let userRotX = 0, userRotY = 0, userRotZ = 0;
+let orbiting = false;
+let orbitPrev = null;
+
+function twoFingerInfo(t0, t1) {
+  const cx = (t0.clientX + t1.clientX) / 2;
+  const cy = (t0.clientY + t1.clientY) / 2;
+  const ang = Math.atan2(t1.clientY - t0.clientY, t1.clientX - t0.clientX);
+  return { cx, cy, ang };
+}
+
 canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length >= 2) {
+    orbiting = true;
+    orbitPrev = twoFingerInfo(e.touches[0], e.touches[1]);
+    return;
+  }
   const t = e.touches[0];
   touchStartX = t.clientX;
   touchStartY = t.clientY;
@@ -1004,6 +1177,24 @@ canvas.addEventListener('touchstart', (e) => {
 }, { passive: true });
 
 canvas.addEventListener('touchmove', (e) => {
+  // two-finger orbit takes priority and works even when idle/paused
+  if (orbiting || e.touches.length >= 2) {
+    if (e.touches.length < 2) return;
+    const info = twoFingerInfo(e.touches[0], e.touches[1]);
+    if (orbitPrev) {
+      userRotY += (info.cx - orbitPrev.cx) * 0.01;   // horizontal drag = spin
+      userRotX += (info.cy - orbitPrev.cy) * 0.01;   // vertical drag = tilt
+      let dAng = info.ang - orbitPrev.ang;
+      if (dAng > Math.PI) dAng -= 2 * Math.PI;
+      if (dAng < -Math.PI) dAng += 2 * Math.PI;
+      userRotZ -= dAng;                               // twist = roll
+      // clamp tilt so it can't flip fully upside down
+      userRotX = Math.max(-1.2, Math.min(1.2, userRotX));
+    }
+    orbitPrev = info;
+    renderBoard3D(performance.now());
+    return;
+  }
   if (!running || paused || clearing) return;
   const t = e.touches[0];
   const dx = t.clientX - touchStartX;
@@ -1041,7 +1232,13 @@ canvas.addEventListener('touchmove', (e) => {
   }
 }, { passive: true });
 
-canvas.addEventListener('touchend', () => {
+canvas.addEventListener('touchend', (e) => {
+  if (orbiting) {
+    // exit orbit once all fingers lift
+    if (e.touches.length === 0) orbiting = false;
+    orbitPrev = null;
+    return;
+  }
   if (!running || paused) return;
   const elapsed = Date.now() - touchStartTime;
   if (axisLock === null && elapsed < 250) {
@@ -1075,8 +1272,14 @@ function fitBoard() {
     w = availW;
     h = w / ratio;
   }
-  canvas.style.width = Math.floor(w) + 'px';
-  canvas.style.height = Math.floor(h) + 'px';
+  w = Math.floor(w); h = Math.floor(h);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  if (renderer) {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
 }
 
 // ResizeObserver fires as soon as the stage has (or changes) its real size,
@@ -1094,9 +1297,11 @@ current = randomPiece();
 next = randomPiece();
 pos = { x: 3, y: -1 };
 running = false;
+initThree();
 refreshBest();
 fitBoard();
 draw();
+renderBoard3D(0);
 overlayText.textContent = 'Tetris';
 overlayBtn.textContent = 'Start';
 overlay.style.display = 'flex';
