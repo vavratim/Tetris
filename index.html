@@ -294,7 +294,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v35</div>
+      <div id="versionBadge">v36</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -390,6 +390,89 @@ const THEMES = [
   { name: 'Aurora', bg: '#001018', style: 'glass', anim: 'shatter', colors: { I: '#4ade80', J: '#22d3ee', L: '#a3e635', O: '#5eead4', S: '#34d399', T: '#818cf8', Z: '#c084fc' } },
   { name: 'Sakura', bg: '#1a0510', style: 'glass', anim: 'shatter', colors: { I: '#ffd7e6', J: '#ff8fb3', L: '#ffc2d4', O: '#fff0f5', S: '#ff9ec7', T: '#f06292', Z: '#ffb7c5' } }
 ];
+// ---- Color legibility pass -------------------------------------------------
+// Pale/pastel palettes read as "all white" once lit, so every theme color is
+// pushed into a mid-lightness, well-saturated band, and pieces whose hues sit
+// close together get pulled apart in brightness so they stay tellable apart.
+function hexToHsl(hex) {
+  let c = hex.replace('#','');
+  if (c.length === 3) c = c.split('').map(ch=>ch+ch).join('');
+  const r = parseInt(c.substr(0,2),16)/255, g = parseInt(c.substr(2,2),16)/255, b = parseInt(c.substr(4,2),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  let h = 0, s = 0; const l = (max+min)/2;
+  const d = max-min;
+  if (d > 0) {
+    s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+    if (max === r) h = ((g-b)/d + (g < b ? 6 : 0));
+    else if (max === g) h = (b-r)/d + 2;
+    else h = (r-g)/d + 4;
+    h *= 60;
+  }
+  return [h, s, l];
+}
+function hslToHex(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2*l - 1)) * s;
+  const x = c * (1 - Math.abs(((h/60) % 2) - 1));
+  const m = l - c/2;
+  let r=0,g=0,b=0;
+  if (h < 60) { r=c; g=x; } else if (h < 120) { r=x; g=c; }
+  else if (h < 180) { g=c; b=x; } else if (h < 240) { g=x; b=c; }
+  else if (h < 300) { r=x; b=c; } else { r=c; b=x; }
+  const to = v => Math.round((v+m)*255).toString(16).padStart(2,'0');
+  return '#' + to(r) + to(g) + to(b);
+}
+function normalizeThemes() {
+  const KEYS = ['I','J','L','O','S','T','Z'];
+  for (const theme of THEMES) {
+    // 1. punch each color into a legible band
+    const hsl = {};
+    const gray = [];
+    for (const k of KEYS) {
+      let [h, s, l] = hexToHsl(theme.colors[k]);
+      // HSL saturation blows up near white, so judge "is this actually a hue?"
+      // by chroma (max-min in RGB) instead
+      const chroma = (1 - Math.abs(2 * l - 1)) * s;
+      if (chroma < 0.09 || (chroma < 0.16 && s < 0.34)) {
+        s = 0;   // intentional gray; lightness gets spread below
+        gray.push(k);
+      } else {
+        s = Math.min(1, Math.max(s, 0.68));
+        l = Math.min(0.60, Math.max(0.34, l));
+      }
+      hsl[k] = [h, s, l];
+    }
+    // 2. grays carry no hue at all, so fan them out across a lightness ladder
+    if (gray.length > 1) {
+      gray.sort((a,b) => hsl[a][2] - hsl[b][2]);
+      const step = 0.44 / (gray.length - 1);
+      gray.forEach((k, i) => { hsl[k][2] = 0.32 + i * step; });
+    } else if (gray.length === 1) {
+      const g = hsl[gray[0]];
+      g[2] = Math.min(0.76, Math.max(0.38, g[2]));
+    }
+
+    // 3. separate pieces that ended up on nearly the same hue
+    const order = KEYS.slice().sort((a,b) => hsl[a][0] - hsl[b][0]);
+    let flip = 1;
+    for (let i = 1; i < order.length; i++) {
+      const prev = hsl[order[i-1]], cur = hsl[order[i]];
+      let gap = Math.abs(cur[0] - prev[0]);
+      if (gap > 180) gap = 360 - gap;
+      const sameLight = Math.abs(cur[2] - prev[2]) < 0.10;
+      if (gap < 28 && sameLight && cur[1] > 0 && prev[1] > 0) {
+        flip = -flip;
+        // keep the shift inside a band where hues still read as themselves
+        // (dropping a yellow too far just turns it muddy)
+        cur[2] = Math.min(0.66, Math.max(0.40, prev[2] + flip * 0.13));
+        cur[0] = cur[0] + flip * 12;   // nudge hue too
+      }
+    }
+    for (const k of KEYS) theme.colors[k] = hslToHex(hsl[k][0], hsl[k][1], hsl[k][2]);
+  }
+}
+normalizeThemes();
+
 const THEME_INTERVAL = 500; // points per theme change
 let themeIndex = 0;
 let lastThemeBand = 0;
@@ -677,9 +760,9 @@ window.addEventListener('click', enableTilt, { once: false });
 let renderer, scene, camera, boardGroup, envMap;
 let cubePool = [], waterPool = [], surfPool = [];
 let liquidTilt = 0, liquidTiltTarget = 0, tiltReady = false;
-const CUBE_GEO = new THREE.BoxGeometry(0.85, 0.85, 0.9);
-const WATER_GEO = new THREE.BoxGeometry(0.78, 1, 0.78);
-const SURF_GEO = new THREE.BoxGeometry(0.8, 0.04, 0.8);
+const CUBE_GEO = new THREE.BoxGeometry(0.86, 0.86, 0.28);
+const WATER_GEO = new THREE.BoxGeometry(0.80, 1, 0.24);
+const SURF_GEO = new THREE.BoxGeometry(0.82, 0.04, 0.26);
 let backPanel, gridLines;
 
 function hexToNum(hex) {
@@ -733,29 +816,28 @@ function initThree() {
   renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.9;
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.0;
   scene = new THREE.Scene();
 
-  camera = new THREE.PerspectiveCamera(46, 0.5, 0.1, 200);
-  camera.position.set(0, 0, 27);
+  const VIEW_H = 23;
+  camera = new THREE.OrthographicCamera(-VIEW_H * 0.25, VIEW_H * 0.25, VIEW_H / 2, -VIEW_H / 2, 0.1, 200);
+  camera.position.set(0, 0, 40);
   camera.lookAt(0, 0, 0);
+  camera.userData.viewH = VIEW_H;
 
   boardGroup = new THREE.Group();
-  boardGroup.rotation.x = 0.2;      // tilt forward a bit
+  boardGroup.rotation.x = 0;        // flat-on view
   scene.add(boardGroup);
 
   // lighting — angled key dominates for face definition; minimal frontal fill
-  scene.add(new THREE.AmbientLight(0xffffff, 0.26));
-  const key = new THREE.DirectionalLight(0xffffff, 0.7);
-  key.position.set(7, 13, 10);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.72));
+  const key = new THREE.DirectionalLight(0xffffff, 0.42);
+  key.position.set(2, 6, 14);
   scene.add(key);
-  const rim = new THREE.DirectionalLight(0x99bbff, 0.3);
-  rim.position.set(-9, 3, 5);
+  const rim = new THREE.DirectionalLight(0x99bbff, 0.14);
+  rim.position.set(-6, 2, 8);
   scene.add(rim);
-  const fill = new THREE.PointLight(0xffffff, 0.1, 100);
-  fill.position.set(3, 2, 16);
-  scene.add(fill);
 
   envMap = makeEnvMap();
 
@@ -775,7 +857,7 @@ function initThree() {
     linePts.push(new THREE.Vector3(-COLS / 2, y, -0.55), new THREE.Vector3(COLS / 2, y, -0.55));
   }
   const lineGeo = new THREE.BufferGeometry().setFromPoints(linePts);
-  gridLines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06 }));
+  gridLines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.10 }));
   boardGroup.add(gridLines);
 
   // pools
@@ -852,21 +934,21 @@ function renderBoard3D(time) {
 
     if (style === 'chrome') {
       // liquid mercury / polished metal
-      m.metalness = 1.0;
-      m.roughness = 0.12;
-      m.envMapIntensity = 1.4;
+      m.metalness = 0.85;
+      m.roughness = 0.28;
+      m.envMapIntensity = 0.85;
     } else if (style === 'glow') {
       // neon: emissive with a gentle pulse (kept in range so it doesn't blow out)
       m.metalness = 0.0;
       m.roughness = 0.5;
       m.color.setHex(colNum);
       m.emissive.setHex(colNum);
-      m.emissiveIntensity = 0.45 + 0.15 * Math.sin(time * 0.004 + cell.x + cell.y);
+      m.emissiveIntensity = 0.28 + 0.08 * Math.sin(time * 0.004 + cell.x + cell.y);
     } else if (style === 'glass') {
       // translucent box ~75% full of wobbling water that responds to phone tilt
       m.metalness = 0.0;
-      m.roughness = 0.08;
-      m.opacity = 0.18;
+      m.roughness = 0.10;
+      m.opacity = 0.16;
       const f = 0.75 + 0.05 * Math.sin(time * 0.003 + cell.x * 0.7 + cell.y * 0.5);
       water.visible = true;
       water.material.color.setHex(colNum);
@@ -876,14 +958,14 @@ function renderBoard3D(time) {
       surf.visible = true;
       surf.material.color.setHex(colNum);
       surf.material.emissive.setHex(colNum);
-      surf.material.emissiveIntensity = 0.4;
+      surf.material.emissiveIntensity = 0.25;
       surf.position.set(px, py - 0.46 * (1 - f) + f * 0.45, 0);
       surf.rotation.z = liquidTilt;           // surface line tilts to match
     } else {
       // bevel: matte plastic block
-      m.metalness = 0.05;
-      m.roughness = 0.72;
-      m.envMapIntensity = 0.25;
+      m.metalness = 0.0;
+      m.roughness = 0.85;
+      m.envMapIntensity = 0.12;
     }
 
     // clear animation: cleared rows flash bright and pop
@@ -904,7 +986,7 @@ function renderBoard3D(time) {
 
   // base tilt + user two-finger orbit + subtle idle sway
   boardGroup.rotation.x = BASE_TILT_X + userRotX;
-  boardGroup.rotation.y = userRotY + 0.05 * Math.sin(time * 0.0004);
+  boardGroup.rotation.y = userRotY;
   boardGroup.rotation.z = userRotZ;
   renderer.render(scene, camera);
 }
@@ -1147,7 +1229,7 @@ const HARD_DROP_SWIPE_UP = 55;
 const H_STEP_PX = 22;  // finger travel that equals one column of horizontal movement
 
 // --- Board orientation: base tilt + user orbit (two-finger) ---
-const BASE_TILT_X = 0.2;
+const BASE_TILT_X = 0;
 let userRotX = 0, userRotY = 0, userRotZ = 0;
 let orbiting = false;
 let orbitPrev = null;
