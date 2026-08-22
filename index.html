@@ -294,7 +294,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v38</div>
+      <div id="versionBadge">v40</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -616,13 +616,44 @@ function getFullRows() {
 }
 
 let clearing = false, clearRows = [], clearCount = 0, clearStart = 0, clearDuration = 0;
+let clearFx = null, clearFxDir = 1, clearFxSeed = 0;
+
+// Effects are drawn from a shuffled bag (same idea as the piece bag) so you
+// never see the same one twice until the whole set has played.
+function makeBag(items) {
+  let queue = [];
+  return function next() {
+    if (!queue.length) {
+      queue = items.slice();
+      for (let i = queue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [queue[i], queue[j]] = [queue[j], queue[i]];
+      }
+    }
+    return queue.pop();
+  };
+}
+const FX_DURATION = {
+  bulldozer: 800, compactor: 820, trapdoor: 850, crane: 980,
+  sawblade: 900, freeze: 900, chainyank: 820, aciddrip: 950,
+  bomber: 1400, wrecker: 1350, meteor: 1300, lightning: 1250,
+  laser: 1300, tank: 1350, blackhole: 1450, volcano: 1450,
+  piledriver: 1400, rocket: 1300
+};
+const TRIPLE_FX = ['bulldozer', 'compactor', 'trapdoor', 'crane', 'sawblade', 'freeze', 'chainyank', 'aciddrip'];
+const TETRIS_FX = ['bomber', 'wrecker', 'meteor', 'lightning', 'laser', 'tank', 'blackhole', 'volcano', 'piledriver', 'rocket'];
+const nextTripleFx = makeBag(TRIPLE_FX);
+const nextTetrisFx = makeBag(TETRIS_FX);
 
 function startClear(rows) {
   clearing = true;
   clearRows = rows.slice();
   clearCount = rows.length;
   clearStart = performance.now();
-  clearDuration = clearCount >= 4 ? 430 : clearCount === 3 ? 320 : 190;
+  clearFx = clearCount >= 4 ? nextTetrisFx() : clearCount === 3 ? nextTripleFx() : null;
+  clearFxDir = Math.random() < 0.5 ? -1 : 1;   // mirrored entrances double the variety
+  clearFxSeed = Math.random();
+  clearDuration = clearFx ? FX_DURATION[clearFx] : (clearCount === 3 ? 320 : 190);
 }
 
 function finishClear() {
@@ -642,6 +673,7 @@ function finishClear() {
 
   clearing = false;
   clearRows = [];
+  clearFx = null;
   spawn();
   updateStats();
 }
@@ -973,6 +1005,8 @@ function initThree() {
   gridLines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.10 }));
   boardGroup.add(gridLines);
 
+  initFxProps();
+
   // pools
   for (let i = 0; i < COLS * ROWS + 8; i++) {
     const cube = new THREE.Mesh(CUBE_GEO, makeCubeMaterial());
@@ -981,6 +1015,734 @@ function initThree() {
     cubePool.push(cube);
   }
 
+}
+
+// ============================================================
+//  LINE-CLEAR EFFECTS  (props + per-cell motion)
+// ============================================================
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeIn = t => t * t * t;
+const clamp01 = t => Math.max(0, Math.min(1, t));
+const FXC1 = new THREE.Color(), FXC2 = new THREE.Color();
+
+let fxMats = {}, props = {}, fxRoots = [];
+
+function fxBox(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x || 0, y || 0, z || 0);
+  return m;
+}
+function fxGroup(children) {
+  const g = new THREE.Group();
+  children.forEach(c => g.add(c));
+  g.visible = false;
+  boardGroup.add(g);
+  fxRoots.push(g);
+  return g;
+}
+function fxPlane(w, h, mat) { return new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat); }
+function additive(hex, opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: hex, transparent: true, opacity: opacity === undefined ? 1 : opacity,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false
+  });
+}
+
+function initFxProps() {
+  const M = fxMats;
+  M.steel  = new THREE.MeshStandardMaterial({ color: 0x39424d, metalness: 0.8, roughness: 0.4, envMap: envMap, envMapIntensity: 0.7 });
+  M.dark   = new THREE.MeshStandardMaterial({ color: 0x1b1f25, metalness: 0.6, roughness: 0.6 });
+  M.paint  = new THREE.MeshStandardMaterial({ color: 0xf2b01e, metalness: 0.35, roughness: 0.55 });
+  M.army   = new THREE.MeshStandardMaterial({ color: 0x4a5340, metalness: 0.3, roughness: 0.8 });
+  M.rubber = new THREE.MeshStandardMaterial({ color: 0x14171b, metalness: 0.1, roughness: 0.95 });
+  M.rock   = new THREE.MeshStandardMaterial({ color: 0x4a3a30, metalness: 0.0, roughness: 1.0, emissive: 0xff4400, emissiveIntensity: 0.45 });
+  M.void   = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  M.white  = additive(0xffffff, 1);
+  M.orange = additive(0xffb060, 0.9);
+  M.cyan   = additive(0x7ff0ff, 0.9);
+  M.green  = additive(0x88ff40, 0.85);
+  M.purple = additive(0xb060ff, 0.9);
+
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.85, 14);
+  const mkWheel = (mat, x, y) => { const w = new THREE.Mesh(wheelGeo, mat); w.position.set(x, y, 0); w.rotation.x = Math.PI / 2; return w; };
+
+  // --- bulldozer ---
+  props.dozer = fxGroup([
+    fxBox(2.0, 0.95, 0.9, M.paint, -0.35, 0.85),
+    fxBox(1.0, 0.75, 0.8, M.paint, -0.75, 1.65),
+    fxBox(0.9, 0.55, 0.6, M.steel, -0.75, 1.65, 0.16),
+    fxBox(0.30, 1.9, 1.15, M.steel, 1.15, 0.95),
+    fxBox(1.3, 0.18, 0.18, M.steel, 0.5, 0.55, 0.3),
+    mkWheel(M.rubber, -1.05, 0.42), mkWheel(M.rubber, -0.1, 0.42), mkWheel(M.rubber, 0.6, 0.42)
+  ]);
+
+  // --- compactor plates ---
+  const mkPlate = () => fxGroup([fxBox(0.55, 1, 1.3, M.steel), fxBox(0.22, 1, 1.0, M.dark, 0.3, 0, 0)]);
+  props.plateA = mkPlate();
+  props.plateB = mkPlate();
+
+  // --- trapdoor (hinged at the outer edges) ---
+  const doorW = COLS / 2;
+  const mkDoor = (sign) => {
+    const geo = new THREE.BoxGeometry(doorW, 0.22, 1.2);
+    geo.translate(sign * doorW / 2, 0, 0);
+    const m = new THREE.Mesh(geo, M.steel);
+    return m;
+  };
+  props.doorA = fxGroup([mkDoor(1)]);
+  props.doorB = fxGroup([mkDoor(-1)]);
+
+  // --- magnet crane ---
+  const cableGeo = new THREE.BoxGeometry(0.14, 1, 0.14);
+  cableGeo.translate(0, 0.5, 0);
+  props.craneCable = new THREE.Mesh(cableGeo, M.dark);
+  props.crane = fxGroup([
+    fxBox(1.7, 0.45, 1.0, M.steel, 0, 0),
+    fxBox(1.25, 0.3, 0.9, M.paint, 0, -0.34),
+    props.craneCable
+  ]);
+
+  // --- sawblade ---
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 0.16, 20), M.steel);
+  disc.rotation.x = Math.PI / 2;
+  const teeth = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.1, 12), M.dark);
+  teeth.rotation.x = Math.PI / 2;
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.24, 12), M.dark);
+  hub.rotation.x = Math.PI / 2;
+  props.sawSpin = new THREE.Group();
+  props.sawSpin.add(disc, teeth);
+  props.saw = fxGroup([props.sawSpin, hub]);
+
+  // --- chain hook ---
+  const chainGeo = new THREE.BoxGeometry(1, 0.12, 0.12);
+  chainGeo.translate(0.5, 0, 0);
+  props.hookChain = new THREE.Mesh(chainGeo, M.dark);
+  props.hook = fxGroup([
+    fxBox(0.5, 0.55, 0.4, M.steel),
+    fxBox(0.2, 0.9, 0.35, M.steel, 0.22, -0.55),
+    fxBox(0.45, 0.2, 0.35, M.steel, -0.05, -0.95),
+    props.hookChain
+  ]);
+
+  // --- bomber + bomb ---
+  props.plane = fxGroup([
+    fxBox(2.6, 0.42, 0.42, M.steel),
+    fxBox(0.55, 0.30, 0.34, M.steel, 1.45, -0.02),
+    fxBox(0.9, 0.10, 1.6, M.steel, -0.1, 0.05),
+    fxBox(0.45, 0.62, 0.10, M.steel, -1.2, 0.42),
+    fxBox(0.7, 0.09, 0.9, M.steel, -1.15, 0.02),
+    fxBox(0.5, 0.22, 0.3, M.paint, 0.55, 0.28)
+  ]);
+  const bombBody = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), M.steel);
+  bombBody.scale.set(1, 1.5, 1);
+  const fin1 = fxBox(0.30, 0.22, 0.05, M.steel, 0, -0.32);
+  const fin2 = fxBox(0.05, 0.22, 0.30, M.steel, 0, -0.32);
+  props.bomb = fxGroup([bombBody, fin1, fin2]);
+
+  // --- wrecking ball ---
+  const ballChainGeo = new THREE.BoxGeometry(0.14, 1, 0.14);
+  ballChainGeo.translate(0, -0.5, 0);
+  props.ballChain = new THREE.Mesh(ballChainGeo, M.dark);
+  props.ballChain.position.y = 0;
+  props.ball = fxGroup([new THREE.Mesh(new THREE.SphereGeometry(0.85, 16, 12), M.dark)]);
+  props.ballRig = fxGroup([props.ballChain]);
+
+  // --- meteor ---
+  const meteorRock = new THREE.Mesh(new THREE.SphereGeometry(0.72, 8, 6), M.rock);
+  props.meteorTrail = fxPlane(3.4, 0.7, additive(0xff8a30, 0.7));
+  props.meteorTrail.position.x = -1.9;
+  props.meteor = fxGroup([meteorRock, props.meteorTrail]);
+
+  // --- lightning bolt (segments repositioned per strike) ---
+  props.boltSegs = [];
+  for (let i = 0; i < 18; i++) props.boltSegs.push(fxBox(0.16, 1, 0.16, M.white));
+  props.bolt = fxGroup(props.boltSegs);
+
+  // --- laser sweep ---
+  props.laser = fxGroup([
+    fxPlane(0.35, ROWS + 3, additive(0xd8fbff, 1)),
+    fxPlane(1.5, ROWS + 3, additive(0x55e6ff, 0.35))
+  ]);
+
+  // --- tank ---
+  props.tankBarrel = fxBox(1.7, 0.20, 0.20, M.steel, 1.05, 0.75);
+  props.muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 8), M.orange);
+  props.muzzle.position.set(1.95, 0.75, 0);
+  props.tank = fxGroup([
+    fxBox(2.5, 0.75, 1.05, M.army, 0, 0.62),
+    fxBox(1.3, 0.5, 0.9, M.army, -0.2, 1.25),
+    props.tankBarrel, props.muzzle,
+    mkWheel(M.rubber, -1.0, 0.4), mkWheel(M.rubber, -0.3, 0.4),
+    mkWheel(M.rubber, 0.4, 0.4), mkWheel(M.rubber, 1.05, 0.4)
+  ]);
+  props.shell = fxGroup([fxBox(0.42, 0.16, 0.16, M.steel)]);
+
+  // --- black hole ---
+  props.holeRing = new THREE.Mesh(new THREE.RingGeometry(0.62, 1.05, 40), M.purple);
+  props.hole = fxGroup([
+    new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 12), M.void),
+    props.holeRing
+  ]);
+
+  // --- lava ---
+  props.lavaTop = fxPlane(COLS + 0.4, 0.22, additive(0xffd080, 0.95));
+  props.lava = fxGroup([fxPlane(COLS + 0.4, 1, additive(0xff5a10, 0.8)), props.lavaTop]);
+
+  // --- pile driver ---
+  props.piston = fxGroup([
+    fxBox(COLS - 0.6, 0.9, 1.3, M.steel, 0, 0),
+    fxBox(1.2, 9, 0.9, M.dark, 0, 5.0)
+  ]);
+
+  // --- rocket flames ---
+  props.flames = [];
+  const coneGeo = new THREE.ConeGeometry(0.36, 1.3, 10);
+  for (let i = 0; i < COLS; i++) {
+    const c = new THREE.Mesh(coneGeo, M.orange);
+    c.rotation.z = Math.PI;
+    c.position.x = i - (COLS - 1) / 2;
+    props.flames.push(c);
+  }
+  props.rocketFire = fxGroup(props.flames);
+
+  // --- shared blast ring + flash ---
+  props.shock = fxGroup([new THREE.Mesh(new THREE.RingGeometry(0.62, 0.92, 48), additive(0xffd9a0, 0.95))]);
+  props.shockRing = props.shock.children[0];
+  blastLight = new THREE.PointLight(0xffc070, 0, 26);
+  blastLight.visible = false;
+  boardGroup.add(blastLight);
+}
+let blastLight;
+
+// deterministic per-cell randomness so debris doesn't jitter between frames
+function cellHash(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+function seedRand(i) {
+  const n = Math.sin(i * 78.233 + clearFxSeed * 419.2) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function clearBand() {
+  const top = (ROWS - 1) / 2 - Math.min(...clearRows);
+  const bot = (ROWS - 1) / 2 - Math.max(...clearRows);
+  return { top, bot, mid: (top + bot) / 2, floor: bot - 0.5, h: top - bot + 1 };
+}
+
+function hideFxProps() {
+  for (const g of fxRoots) g.visible = false;
+  if (blastLight) { blastLight.visible = false; blastLight.intensity = 0; }
+}
+
+function blast(x, y, t, tint) {
+  props.shock.visible = true;
+  props.shockRing.position.set(x, y, 0.45);
+  const sc = 0.5 + t * (COLS * 1.2);
+  props.shockRing.scale.set(sc, sc, 1);
+  props.shockRing.material.opacity = Math.max(0, 0.95 * (1 - t) * (1 - t));
+  if (tint) props.shockRing.material.color.setHex(tint);
+  if (t < 0.45) {
+    blastLight.visible = true;
+    blastLight.position.set(x, y, 3);
+    blastLight.intensity = 9 * (1 - t / 0.45);
+  }
+}
+
+// ---------------- prop animation, one entry per effect ----------------
+const FX_PROPS = {
+  bulldozer(p, band, dir) {
+    const bx = dir * (-(COLS / 2 + 2.5) + p * (COLS + 5));
+    const g = props.dozer;
+    g.visible = true;
+    g.scale.x = dir;
+    g.position.set(bx - dir * 1.15, band.floor, 0.75);
+    g.position.y += 0.05 * Math.sin(p * 46);
+    g.rotation.z = -dir * 0.03 * Math.sin(p * 33);
+  },
+  compactor(p, band) {
+    if (p > 0.72) return;
+    const e = easeIn(clamp01(p / 0.6));
+    const x = (COLS / 2 + 1.4) - e * (COLS / 2 + 0.55);
+    for (const [g, sign] of [[props.plateA, 1], [props.plateB, -1]]) {
+      g.visible = true;
+      g.scale.set(1, band.h + 0.5, 1);
+      g.scale.x = sign;
+      g.position.set(sign * x, band.mid, 0.5);
+    }
+  },
+  trapdoor(p, band) {
+    const a = easeOut(clamp01(p / 0.30)) * 1.45;
+    props.doorA.visible = props.doorB.visible = true;
+    props.doorA.position.set(-COLS / 2, band.floor, 0.35);
+    props.doorA.rotation.z = -a;
+    props.doorB.position.set(COLS / 2, band.floor, 0.35);
+    props.doorB.rotation.z = a;
+  },
+  crane(p, band) {
+    const g = props.crane;
+    g.visible = true;
+    const y = craneY(p, band);
+    g.position.set(0, y, 0.9);
+    g.rotation.z = 0.04 * Math.sin(p * 22);
+    const len = (ROWS / 2 + 3) - y;
+    props.craneCable.scale.y = Math.max(0.1, len);
+  },
+  sawblade(p, band, dir) {
+    const g = props.saw;
+    g.visible = true;
+    g.position.set(dir * (-(COLS / 2 + 1.8) + p * (COLS + 3.6)), band.mid, 0.8);
+    props.sawSpin.rotation.z = -dir * p * 60;
+  },
+  freeze(p, band) { /* no props: the blocks themselves ice over */ },
+  chainyank(p, band, dir) {
+    const HOOK = 0.28;
+    const g = props.hook;
+    g.visible = true;
+    const inT = clamp01(p / HOOK);
+    let x = dir * ((COLS / 2 + 2.5) - easeOut(inT) * 2.6);
+    if (p > HOOK) x = dir * ((COLS / 2 - 0.1) + easeIn((p - HOOK) / (1 - HOOK)) * (COLS + 8));
+    g.visible = Math.abs(x) < COLS / 2 + 6;
+    g.scale.x = dir;
+    g.position.set(x, band.mid, 0.85);
+    props.hookChain.scale.x = COLS + 12;   // trails off past the edge of the board
+  },
+  aciddrip(p, band) { /* no props: the blocks eat away from the bottom up */ },
+
+  bomber(p, band, dir) {
+    const RELEASE = 0.26, IMPACT = 0.50;
+    if (p < 0.62) {
+      props.plane.visible = true;
+      props.plane.scale.x = dir;
+      const flyT = p / 0.62;
+      props.plane.position.set(dir * (-(COLS / 2 + 3.5) + flyT * (COLS + 7)), ROWS / 2 - 1.2, 1.2);
+      props.plane.position.y += 0.12 * Math.sin(p * 18);
+    }
+    if (p >= RELEASE && p < IMPACT) {
+      const t = (p - RELEASE) / (IMPACT - RELEASE);
+      const rx = dir * (-(COLS / 2 + 3.5) + (RELEASE / 0.62) * (COLS + 7));
+      const ry = ROWS / 2 - 1.4;
+      props.bomb.visible = true;
+      props.bomb.position.set(rx + (0 - rx) * t, ry + (band.mid - ry) * t * t, 0.8);
+      props.bomb.rotation.z = -dir * (0.9 - 0.9 * t * t);
+    }
+    if (p >= IMPACT) blast(0, band.mid, (p - IMPACT) / (1 - IMPACT), 0xffd9a0);
+  },
+  wrecker(p, band, dir) {
+    // arc swept low through the band at the moment of impact
+    const HIT = 0.42;
+    const anchorX = dir * (COLS / 2 + 2.5), anchorY = ROWS / 2 + 2.5;
+    const x = dir * (COLS / 2 + 3) - dir * p * (COLS + 6);
+    const swing = (p - HIT) * 2.3;
+    const y = band.mid + 4.5 * swing * swing;
+    props.ball.visible = true;
+    props.ball.position.set(x, y, 0.95);
+    props.ballRig.visible = true;
+    props.ballRig.position.set(anchorX, anchorY, 0.85);
+    props.ballChain.scale.y = Math.hypot(x - anchorX, anchorY - y);
+    props.ballChain.rotation.z = Math.atan2(x - anchorX, anchorY - y);
+  },
+  meteor(p, band, dir) {
+    const IMPACT = 0.42;
+    if (p < IMPACT) {
+      const t = p / IMPACT;
+      props.meteor.visible = true;
+      const sx = dir * (COLS / 2 + 4), sy = ROWS / 2 + 4;
+      props.meteor.position.set(sx + (0 - sx) * t, sy + (band.mid - sy) * (t * t * 0.6 + t * 0.4), 1.1);
+      props.meteor.rotation.z = Math.atan2(band.mid - sy, -sx) + (dir > 0 ? 0 : Math.PI);
+      props.meteor.scale.setScalar(1 + 0.2 * t);
+    } else {
+      blast(0, band.mid, (p - IMPACT) / (1 - IMPACT), 0xffb060);
+    }
+  },
+  lightning(p, band) {
+    const STRIKE = 0.34;
+    if (p < STRIKE || p > STRIKE + 0.35) return;
+    const t = (p - STRIKE) / 0.35;
+    props.bolt.visible = true;
+    props.bolt.position.set(0, 0, 1.0);
+    const segs = props.boltSegs;
+    const y0 = ROWS / 2 + 2, y1 = band.mid;
+    const step = (y0 - y1) / segs.length;
+    let x = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const nx = (seedRand(i) - 0.5) * 1.6 * (1 - i / segs.length);
+      const seg = segs[i];
+      seg.visible = t < 0.75 && (i / segs.length) < (0.2 + t * 2.2);
+      seg.position.set((x + nx) / 2, y0 - step * (i + 0.5), 0);
+      seg.scale.set(1, step * 1.25, 1);
+      seg.rotation.z = Math.atan2(nx - x, step) * -1;
+      seg.material = fxMats.white;
+      x = nx;
+    }
+    if (t < 0.3) {
+      blastLight.visible = true;
+      blastLight.position.set(0, band.mid, 4);
+      blastLight.intensity = 12 * (1 - t / 0.3);
+      blastLight.color.setHex(0xdfe9ff);
+    }
+  },
+  laser(p, band, dir) {
+    props.laser.visible = true;
+    props.laser.position.set(dir * (-(COLS / 2 + 1) + p * (COLS + 2)), 0, 1.0);
+    props.laser.children[1].material.opacity = 0.3 + 0.15 * Math.sin(p * 60);
+  },
+  tank(p, band, dir) {
+    const FIRE = 0.38, TRAVEL = 0.16;
+    const g = props.tank;
+    g.visible = true;
+    g.scale.x = -dir;
+    const inT = clamp01(p / (FIRE - 0.06));
+    const restX = dir * (COLS / 2 - 0.6);
+    g.position.set(dir * (COLS / 2 + 3) + (restX - dir * (COLS / 2 + 3)) * easeOut(inT), band.floor, 0.9);
+    const recoil = p > FIRE ? Math.max(0, 0.5 - (p - FIRE) * 4) : 0;
+    props.tankBarrel.position.x = 1.05 - recoil;
+    props.muzzle.visible = p > FIRE && p < FIRE + 0.06;
+    props.muzzle.scale.setScalar(p > FIRE ? 1 + (p - FIRE) * 12 : 1);
+    if (p >= FIRE && p <= FIRE + TRAVEL) {
+      const t = (p - FIRE) / TRAVEL;
+      props.shell.visible = true;
+      props.shell.position.set(restX - dir * t * (COLS + 1.2), band.mid, 0.9);
+    }
+  },
+  blackhole(p, band) {
+    if (p < 0.10) return;
+    const g = props.hole;
+    g.visible = true;
+    g.position.set(0, band.mid, 0.9);
+    const grow = clamp01((p - 0.10) / 0.25);
+    const shrink = 1 - clamp01((p - 0.82) / 0.18);
+    g.scale.setScalar(Math.max(0.01, grow * shrink * (1 + 0.06 * Math.sin(p * 40))));
+    props.holeRing.rotation.z = p * 14;
+    props.holeRing.material.opacity = 0.9 * shrink;
+    if (p > 0.86) blast(0, band.mid, (p - 0.86) / 0.14, 0xc080ff);
+  },
+  volcano(p, band) {
+    const lvl = lavaLevel(p, band);
+    props.lava.visible = true;
+    const h = Math.max(0.05, lvl - (band.floor - 0.4));
+    props.lava.children[0].scale.y = h;
+    props.lava.children[0].position.y = (band.floor - 0.4) + h / 2;
+    props.lavaTop.position.y = lvl;
+    props.lava.position.set(0, 0, 0.5);
+    props.lava.children[0].material.opacity = 0.8 * (1 - clamp01((p - 0.82) / 0.18));
+    props.lavaTop.material.opacity = 0.95 * (1 - clamp01((p - 0.82) / 0.18));
+  },
+  piledriver(p, band) {
+    const g = props.piston;
+    g.visible = true;
+    const hits = PILE_HITS;
+    let y = band.top + 3.2;
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      if (p >= h - 0.16 && p < h) {
+        const t = (p - (h - 0.16)) / 0.16;
+        y = band.top + 3.2 - easeIn(t) * (band.top + 3.2 - (band.top - i + 0.75));
+      } else if (p >= h && p < h + 0.10) {
+        const t = (p - h) / 0.10;
+        y = (band.top - i + 0.75) + easeOut(t) * 2.4;
+      }
+    }
+    g.position.set(0, y, 0.9);
+  },
+  rocket(p, band) {
+    const IGN = 0.18;
+    if (p < IGN) return;
+    const t = (p - IGN) / (1 - IGN);
+    props.rocketFire.visible = true;
+    const lift = 28 * t * t * t + 2 * t;
+    props.rocketFire.position.set(0, band.floor + lift - 0.75, 0.6);
+    for (let i = 0; i < props.flames.length; i++) {
+      const flick = 0.75 + 0.45 * Math.sin(p * 90 + i * 1.7);
+      props.flames[i].scale.set(1, flick * (1 + t * 1.6), 1);
+      props.flames[i].material.opacity = 0.9;
+    }
+  }
+};
+
+const PILE_HITS = [0.18, 0.38, 0.58, 0.78];
+function craneY(p, band) {
+  if (p < 0.30) return (ROWS / 2 + 3) + (band.top + 1.6 - (ROWS / 2 + 3)) * easeOut(p / 0.30);
+  if (p < 0.62) return band.top + 1.6;
+  return (band.top + 1.6) + easeIn((p - 0.62) / 0.38) * (ROWS / 2 + 6);
+}
+function lavaLevel(p, band) {
+  return (band.floor - 0.4) + easeOut(clamp01((p - 0.10) / 0.62)) * (band.h + 1.0);
+}
+
+// ---------------- per-cell motion, one entry per effect ----------------
+const FX_CELL = {
+  bulldozer(c) {
+    const bx = c.dir * (-(COLS / 2 + 2.5) + c.p * (COLS + 5));
+    const dist = c.dir * (bx - c.px);
+    if (dist <= 0) return;
+    const x = bx + c.dir * (0.55 + dist * 0.22);
+    c.cube.position.x = x;
+    c.cube.position.y = c.py + Math.min(0.55, dist * 0.07) + 0.10 * Math.sin(dist * 1.7 + c.h1 * 6.3);
+    c.cube.rotation.z = -c.dir * dist * 0.22 + (c.h1 - 0.5) * 0.5;
+    const over = Math.abs(x) - (COLS / 2 + 0.4);
+    if (over > 0) c.m.opacity = Math.max(0, 1 - over * 0.75);
+  },
+  compactor(c) {
+    const SQ = 0.6;
+    if (c.p < SQ) {
+      const e = easeIn(c.p / SQ);
+      c.cube.position.x = c.px * (1 - 0.88 * e);
+      c.cube.scale.x = 1 - 0.80 * e;
+      c.cube.position.y = c.py + 0.10 * e * Math.sin(e * 7 + c.h1 * 6);
+    } else {
+      const t = (c.p - SQ) / (1 - SQ);
+      c.cube.position.x = c.px * 0.12;
+      c.cube.scale.x = 0.2;
+      c.cube.position.y = c.py - 34 * t * t;
+      c.cube.rotation.z = (c.h1 - 0.5) * 2 * t;
+      c.m.opacity = 1 - t * 0.9;
+    }
+  },
+  trapdoor(c) {
+    if (c.p < 0.20) { c.cube.position.y = c.py - 0.06 * (c.p / 0.20); return; }
+    const t = (c.p - 0.20) / 0.80;
+    c.cube.position.y = c.py - 36 * t * t - 0.4 * t;
+    c.cube.position.x = c.px + (c.h1 - 0.5) * 1.1 * t;
+    c.cube.rotation.z = (c.h1 - 0.5) * 5 * t;
+    c.m.opacity = 1 - Math.max(0, t - 0.55) * 2.2;
+  },
+  crane(c) {
+    const order = c.dir > 0 ? c.cell.x : (COLS - 1 - c.cell.x);
+    const a = 0.30 + order * 0.026;
+    if (c.p < a) return;
+    const t = clamp01((c.p - a) / Math.max(0.05, 0.88 - a));
+    const magY = craneY(c.p, c.band);
+    const stack = (c.band.top - c.py) * 0.45;
+    c.cube.position.y = c.py + (magY - 1.0 - stack - c.py) * easeOut(t);
+    c.cube.position.x = c.px + 0.10 * Math.sin(t * 12 + c.h1 * 6) * (1 - t);
+    c.cube.rotation.z = 0.25 * Math.sin(t * 9 + c.h2 * 6) * (1 - t * 0.5);
+  },
+  sawblade(c) {
+    const sawX = c.dir * (-(COLS / 2 + 1.8) + c.p * (COLS + 3.6));
+    const past = c.dir * (sawX - c.px);
+    if (past <= 0) return;
+    const t = clamp01(past / 3.2);
+    const up = c.py > c.band.mid ? 1 : -1;
+    c.cube.position.x = c.px + c.dir * 0.25 * t + (c.h1 - 0.5) * 0.3 * t;
+    c.cube.position.y = c.py + up * 0.55 * t - (up > 0 ? 9 : 20) * t * t * 0.55;
+    c.cube.rotation.z = up * c.dir * 2.2 * t;
+    c.m.opacity = 1 - Math.max(0, t - 0.55) * 2.2;
+  },
+  freeze(c) {
+    const F = 0.42;
+    FXC1.setHex(0xcdeeff);
+    if (c.p < F) {
+      const e = c.p / F;
+      c.m.color.lerp(FXC1, e * 0.85);
+      c.m.emissive.setHex(0x2f7bff);
+      c.m.emissiveIntensity = 0.3 * e;
+      const sc = 1 + 0.05 * e;
+      c.cube.scale.set(sc, sc, 1);
+      return;
+    }
+    const t = (c.p - F) / (1 - F);
+    c.m.color.lerp(FXC1, 0.85);
+    c.m.emissive.setHex(0x2f7bff);
+    c.m.emissiveIntensity = 0.5 * (1 - t);
+    const sc = Math.max(0.05, 1 - 0.6 * t);
+    c.cube.scale.set(sc, sc, sc);
+    c.cube.position.x = c.px + (c.h1 - 0.5) * 5.5 * t;
+    c.cube.position.y = c.py + (c.h2 - 0.35) * 4.5 * t - 11 * t * t;
+    c.cube.rotation.z = (c.h1 - 0.5) * 14 * t;
+    c.cube.rotation.x = (c.h2 - 0.5) * 12 * t;
+    c.m.opacity = 1 - t * 0.95;
+  },
+  chainyank(c) {
+    const HOOK = 0.28;
+    if (c.p < HOOK) { c.cube.position.x = c.px + c.dir * 0.05 * (c.p / HOOK); return; }
+    const t = (c.p - HOOK) / (1 - HOOK);
+    const lag = (c.dir > 0 ? (COLS - 1 - c.cell.x) : c.cell.x) * 0.030;
+    const tt = clamp01((t - lag) / Math.max(0.05, 1 - lag));
+    const x = c.px + c.dir * easeIn(tt) * (COLS + 9);
+    c.cube.position.x = x;
+    c.cube.position.y = c.py + 0.28 * tt * Math.sin(tt * 9 + c.h1 * 6);
+    c.cube.rotation.z = -c.dir * tt * 3.2;
+    const over = Math.abs(x) - (COLS / 2 + 0.4);
+    if (over > 0) c.m.opacity = Math.max(0, 1 - over * 0.55);
+  },
+  aciddrip(c) {
+    const fromBottom = c.py - c.band.bot;
+    const start = 0.04 + fromBottom * 0.15 + c.h1 * 0.06;
+    const t = clamp01((c.p - start) / 0.45);
+    if (t <= 0) return;
+    c.m.emissive.setHex(0x7cff2f);
+    c.m.emissiveIntensity = 0.9 * Math.sin(t * Math.PI);
+    const sy = Math.max(0.04, 1 - t);
+    c.cube.scale.set(1 + 0.06 * Math.sin(t * 22 + c.h2 * 6), sy, 1);
+    c.cube.position.y = c.py - (1 - sy) * 0.5;
+    c.m.opacity = 1 - t * 0.95;
+  },
+
+  bomber(c) { radialBlast(c, 0.50, 0, 11, 5.0, 16); },
+  meteor(c) { radialBlast(c, 0.42, 0, 13, 3.6, 15); },
+  wrecker(c) {
+    const HIT = 0.42;
+    if (c.p < HIT) { c.cube.position.x = c.px + 0.04 * Math.sin(c.time * 0.05 + c.h1 * 9) * (c.p / HIT); return; }
+    const t = (c.p - HIT) / (1 - HIT);
+    const entry = -c.dir * (COLS / 2);
+    const lag = clamp01(Math.abs(c.px - entry) / COLS) * 0.35;
+    const tt = clamp01((t - lag) / Math.max(0.05, 1 - lag));
+    c.cube.position.x = c.px - c.dir * (6 + 5 * c.h1) * tt;
+    c.cube.position.y = c.py + (3.5 + 3 * c.h2) * tt - 15 * tt * tt;
+    c.cube.rotation.z = (c.h1 - 0.5) * 20 * tt;
+    c.m.opacity = 1 - Math.max(0, tt - 0.3) * 1.5;
+  },
+  lightning(c) {
+    const STRIKE = 0.34;
+    if (c.p < STRIKE) {
+      c.m.emissive.setHex(0xdfe9ff);
+      c.m.emissiveIntensity = 0.5 * Math.max(0, Math.sin(c.p * 70)) * (c.p / STRIKE);
+      return;
+    }
+    const t = (c.p - STRIKE) / (1 - STRIKE);
+    const d = Math.abs(c.px) / (COLS / 2);
+    const tt = clamp01((t - d * 0.35) / 0.55);
+    c.m.emissive.setHex(0xffffff);
+    c.m.emissiveIntensity = 3.2 * Math.sin(tt * Math.PI);
+    const sc = Math.max(0.02, 1 - tt);
+    c.cube.scale.set(sc, sc, sc);
+    c.cube.position.y = c.py + tt * 0.7;
+    c.cube.rotation.z = tt * 1.2 * (c.h1 - 0.5);
+    c.m.opacity = 1 - tt;
+  },
+  laser(c) {
+    const beamX = c.dir * (-(COLS / 2 + 1) + c.p * (COLS + 2));
+    const past = c.dir * (beamX - c.px);
+    if (past <= 0) return;
+    const t = clamp01(past / 2.4);
+    c.m.emissive.setHex(0x8ff2ff);
+    c.m.emissiveIntensity = 2.6 * (1 - t);
+    c.cube.scale.set(Math.max(0.02, 1 - t), Math.max(0.02, 1 - t * 0.55), 1);
+    c.cube.position.y = c.py + t * 0.55;
+    c.cube.position.x = c.px + (c.h1 - 0.5) * 0.5 * t;
+    c.m.opacity = 1 - t;
+  },
+  tank(c) {
+    const FIRE = 0.38, TRAVEL = 0.16;
+    const restX = c.dir * (COLS / 2 - 0.6);
+    const f = clamp01(Math.abs(restX - c.px) / (COLS + 1.2));
+    const passAt = FIRE + TRAVEL * f;
+    if (c.p < passAt) {
+      c.cube.position.x = c.px + 0.03 * Math.sin(c.time * 0.06 + c.h1 * 9) * clamp01(c.p / passAt);
+      return;
+    }
+    const tt = clamp01((c.p - passAt) / Math.max(0.05, 1 - passAt));
+    c.cube.position.x = c.px - c.dir * (7 + 4 * c.h1) * tt;
+    c.cube.position.y = c.py + (2.6 + 3.4 * c.h2) * tt - 15 * tt * tt;
+    c.cube.rotation.z = (c.h1 - 0.5) * 22 * tt;
+    c.m.emissive.setHex(0xffffff);
+    c.m.emissiveIntensity = Math.max(0, 2.2 * (1 - tt * 5));
+    c.m.opacity = 1 - Math.max(0, tt - 0.3) * 1.5;
+  },
+  blackhole(c) {
+    const START = 0.12;
+    if (c.p < START) return;
+    const t = clamp01((c.p - START) / 0.78);
+    const dx = c.px, dy = c.py - c.band.mid;
+    const r0 = Math.hypot(dx, dy), a0 = Math.atan2(dy, dx);
+    const r = r0 * (1 - easeIn(t));
+    const a = a0 + t * 6.5 * (1 + c.h1 * 0.35);
+    c.cube.position.x = r * Math.cos(a);
+    c.cube.position.y = c.band.mid + r * Math.sin(a);
+    const sc = Math.max(0.04, 1 - t * 0.92);
+    c.cube.scale.set(sc, sc, sc);
+    c.cube.rotation.z = a * 2;
+    c.m.opacity = 1 - clamp01((t - 0.72) / 0.28);
+  },
+  volcano(c) {
+    const lvl = lavaLevel(c.p, c.band);
+    if (c.py - 0.45 > lvl) return;
+    const t = clamp01((lvl - (c.py - 0.45)) / 1.3);
+    FXC2.setHex(0xff7a1a);
+    c.m.color.lerp(FXC2, t * 0.85);
+    c.m.emissive.setHex(0xff5a00);
+    c.m.emissiveIntensity = 1.8 * t;
+    const sy = Math.max(0.05, 1 - t);
+    c.cube.scale.set(1 - t * 0.15, sy, 1);
+    c.cube.position.y = c.py - (1 - sy) * 0.5;
+    c.m.opacity = 1 - t * 0.92;
+  },
+  piledriver(c) {
+    const rowIdx = Math.min(PILE_HITS.length - 1, Math.max(0, Math.round(c.band.top - c.py)));
+    const hit = PILE_HITS[rowIdx];
+    if (c.p < hit) {
+      const near = clamp01((c.p - (hit - 0.10)) / 0.10);
+      c.cube.position.y = c.py + 0.05 * near * Math.sin(c.time * 0.09 + c.h1 * 9);
+      return;
+    }
+    const t = clamp01((c.p - hit) / 0.20);
+    const sy = Math.max(0.08, 1 - 0.92 * easeOut(t));
+    c.cube.scale.set(1 + 0.55 * easeOut(t), sy, 1);
+    c.cube.position.y = c.py - (1 - sy) * 0.5;
+    c.cube.position.x = c.px + (c.h1 - 0.5) * 0.8 * easeOut(t);
+    c.m.emissive.setHex(0xffffff);
+    c.m.emissiveIntensity = 1.6 * Math.max(0, 1 - t * 4);
+    c.m.opacity = 1 - t * 0.95;
+  },
+  rocket(c) {
+    const IGN = 0.18;
+    if (c.p < IGN) {
+      c.cube.position.y = c.py + 0.07 * Math.sin(c.time * 0.09 + c.h1 * 6) * (c.p / IGN);
+      return;
+    }
+    const t = (c.p - IGN) / (1 - IGN);
+    const lift = 28 * t * t * t + 2 * t;
+    c.cube.position.y = c.py + lift;
+    c.cube.position.x = c.px + 0.12 * t * Math.sin(t * 11 + c.h1 * 6);
+    c.cube.rotation.z = 0.06 * Math.sin(t * 13 + c.h2 * 6);
+    c.m.emissive.setHex(0xff8a30);
+    c.m.emissiveIntensity = 0.5 * t;
+    const above = c.cube.position.y - (ROWS / 2 + 1);
+    if (above > 0) c.m.opacity = Math.max(0, 1 - above * 0.3);
+  }
+};
+
+// shared ballistic scatter used by the bomb and the meteor
+function radialBlast(c, impactP, impactX, power, kick, gravity) {
+  if (c.p < impactP) {
+    const shake = 0.05 * Math.pow(c.p / impactP, 2);
+    c.cube.position.x = c.px + shake * Math.sin(c.time * 0.06 + c.h1 * 9);
+    c.cube.position.y = c.py + shake * Math.cos(c.time * 0.05 + c.h2 * 9);
+    return;
+  }
+  const t = (c.p - impactP) / (1 - impactP);
+  const dx = c.px - impactX, dy = c.py - c.band.mid;
+  const d = Math.hypot(dx, dy) + 0.4;
+  const sp = power / (1 + d * 0.30);
+  const vx = (dx / d) * sp * (0.7 + 0.7 * c.h1);
+  const vy = (dy / d) * sp * 0.5 + kick + 3.5 * c.h2;
+  const tt = t * 0.6;
+  c.cube.position.x = c.px + vx * tt;
+  c.cube.position.y = c.py + vy * tt - gravity * tt * tt;
+  c.cube.rotation.z = (c.h1 - 0.5) * 26 * tt;
+  c.cube.rotation.x = (c.h2 - 0.5) * 20 * tt;
+  c.m.emissive.setHex(0xffffff);
+  c.m.emissiveIntensity = Math.max(0, 2.6 * (1 - t * 3.5));
+  c.m.opacity = Math.max(0, 1 - Math.max(0, t - 0.25) * 1.5);
+}
+
+function updateFxProps(p) {
+  hideFxProps();
+  if (!clearing || !clearFx || !FX_PROPS[clearFx]) return;
+  FX_PROPS[clearFx](p, clearBand(), clearFxDir);
+}
+
+// per-cell motion for cleared blocks; returns true if an effect took over
+function fxCell(cube, m, cell, px, py, p, time) {
+  const fn = clearFx && FX_CELL[clearFx];
+  if (!fn) return false;
+  fn({
+    cube, m, cell, px, py, p, time,
+    dir: clearFxDir, band: clearBand(),
+    h1: cellHash(cell.x, cell.y), h2: cellHash(cell.y * 3.7, cell.x * 1.9)
+  });
+  return true;
 }
 
 // gather all visible cells (locked grid + active piece) as {x,y,color,clearing}
@@ -1062,8 +1824,8 @@ function renderBoard3D(time) {
       m.envMapIntensity = 0.12;
     }
 
-    // clear animation: cleared rows flash bright and pop
-    if (cell.clr) {
+    // clear animation: an effect takes over for triples/tetrises, otherwise flash
+    if (cell.clr && !fxCell(cube, m, cell, px, py, clearP, time)) {
       const pop = 1 + 0.25 * Math.sin(clearP * Math.PI);
       cube.scale.set(pop, pop, pop);
       m.emissive.setHex(0xffffff);
@@ -1073,6 +1835,8 @@ function renderBoard3D(time) {
     ci++;
   }
   for (let k = ci; k < cubePool.length; k++) cubePool[k].visible = false;
+
+  updateFxProps(clearP);
 
   // base tilt + user two-finger orbit + subtle idle sway
   boardGroup.rotation.x = BASE_TILT_X + userRotX;
