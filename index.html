@@ -435,10 +435,10 @@ function normalizeThemes() {
       // by chroma (max-min in RGB) instead
       const chroma = (1 - Math.abs(2 * l - 1)) * s;
       if (theme.muted) {
-        // textured stone/metal themes keep their earthy, low-saturation look;
-        // only nudge lightness so nothing goes muddy or blows out
-        if (chroma > 0.06) s = Math.min(1, Math.max(s, 0.18));
-        l = Math.min(0.72, Math.max(0.34, l));
+        // textured stone/metal themes keep their earthy, low-saturation look,
+        // but still need enough punch to read against the dark board/bg
+        if (chroma > 0.06) s = Math.min(1, Math.max(s, 0.26));
+        l = Math.min(0.76, Math.max(0.40, l));
       } else if (chroma < 0.09 || (chroma < 0.16 && s < 0.34)) {
         s = 0;   // intentional gray; lightness gets spread below
         gray.push(k);
@@ -972,7 +972,7 @@ function initThree() {
   camera.userData.viewH = VIEW_H;
 
   boardGroup = new THREE.Group();
-  boardGroup.rotation.x = 0.10;     // near-flat view
+  boardGroup.rotation.x = 0.22;     // tilted forward enough to read the 3D faces
   scene.add(boardGroup);
 
   // lighting — angled key dominates for face definition; minimal frontal fill
@@ -1810,13 +1810,15 @@ function renderBoard3D(time) {
     } else if (style === 'granite' || style === 'basalt' || style === 'marble') {
       // chiseled stone: rough, non-metallic, texture does the work
       m.metalness = 0.0;
-      m.roughness = style === 'marble' ? 0.45 : 0.95;
-      m.envMapIntensity = style === 'marble' ? 0.35 : 0.08;
+      m.roughness = style === 'marble' ? 0.45 : 0.8;
+      m.envMapIntensity = style === 'marble' ? 0.35 : 0.18;
+      m.bumpScale = style === 'marble' ? 0.35 : 0.55;
     } else if (style === 'brushed' || style === 'hammered') {
       // worked metal: reflective, but rough enough to keep the color readable
-      m.metalness = 0.75;
-      m.roughness = style === 'brushed' ? 0.38 : 0.30;
+      m.metalness = 0.6;
+      m.roughness = style === 'brushed' ? 0.4 : 0.32;
       m.envMapIntensity = 0.7;
+      m.bumpScale = 0.5;
     } else {
       // bevel: matte plastic block
       m.metalness = 0.0;
@@ -2088,8 +2090,8 @@ const H_STEP_PX = 22;  // finger travel that equals one column of horizontal mov
 // --- Board orientation: base tilt + user orbit (two-finger) ---
 // just enough tilt that the dark top/side faces show as a sliver on every
 // block; still orthographic, so there's no vanishing-point distortion
-const BASE_TILT_X = 0.10;
-const BASE_TILT_Y = 0.07;
+const BASE_TILT_X = 0.22;
+const BASE_TILT_Y = 0.09;
 let userRotX = 0, userRotY = 0, userRotZ = 0;
 let orbiting = false;
 let orbitPrev = null;
