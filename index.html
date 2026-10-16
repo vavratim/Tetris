@@ -8,7 +8,8 @@
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "postprocessing": "https://cdn.jsdelivr.net/npm/postprocessing@6.39.5/build/index.js"
   }
 }
 </script>
@@ -350,7 +351,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v41</div>
+      <div id="versionBadge">v42</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -408,6 +409,13 @@
         </div>
         <button class="set-sw" id="swLighting" role="switch" aria-checked="true" aria-label="Lighting and materials"></button>
       </div>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Post-processing</div>
+          <div class="set-sub">Bloom on bright blocks and effects, a soft vignette, and a colour-split kick on Tetrises.</div>
+        </div>
+        <button class="set-sw" id="swPost" role="switch" aria-checked="true" aria-label="Post-processing"></button>
+      </div>
       <button id="settingsClose">Done</button>
     </div>
   </div>
@@ -416,6 +424,10 @@
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import {
+  EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect,
+  ChromaticAberrationEffect, ToneMappingEffect, ToneMappingMode, BlendFunction
+} from 'postprocessing';
 
 const COLS = 10, ROWS = 20, SIZE = 30;
 const canvas = document.getElementById('board');
@@ -427,7 +439,7 @@ const overlayBtn = document.getElementById('overlayBtn');
 
 // ---- effect settings (one flag per group; each phase adds its own) ----
 // Persisted so a comparison survives a reload on the phone.
-const FX_DEFAULTS = { lighting: true };
+const FX_DEFAULTS = { lighting: true, post: true };
 const FX_ON = Object.assign({}, FX_DEFAULTS);
 try {
   const saved = JSON.parse(localStorage.getItem('tetrisFx') || '{}');
@@ -741,6 +753,7 @@ function startClear(rows) {
   clearFxDir = Math.random() < 0.5 ? -1 : 1;   // mirrored entrances double the variety
   clearFxSeed = Math.random();
   clearDuration = clearFx ? FX_DURATION[clearFx] : (clearCount === 3 ? 320 : 190);
+  if (clearCount >= 4) kickCaPulse(0.0045);    // Tetrises only
 }
 
 function finishClear() {
@@ -856,6 +869,8 @@ function tryRotate() {
 let renderer, scene, camera, boardGroup, envMap, roomEnv;
 let ambLight, keyLight, rimLight;
 let lastShadowSig = '';
+let composer, bloomFx, caFx, vignetteFx, toneFx, postReady = false;
+let caPulseStart = -1, caPulsePeak = 0;
 let cubePool = [];
 const CUBE_GEO = new THREE.BoxGeometry(0.86, 0.86, 0.34);
 // Bake per-face brightness into vertex colors so the front face reads at full
@@ -1136,7 +1151,83 @@ function initThree() {
     cubePool.push(cube);
   }
 
+  initPost();
   applyLighting();
+  applyPost();
+}
+
+// ---- post-processing chain ----
+// One EffectPass merges every effect into a single fragment shader, which is
+// the whole reason for using this library over EffectComposer's pass-per-effect.
+function initPost() {
+  try {
+    composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
+    composer.addPass(new RenderPass(scene, camera));
+
+    // mipmapBlur does the blur on a half-size mip chain rather than at full
+    // resolution, and six levels is plenty for a board this size on a phone
+    bloomFx = new BloomEffect({
+      blendFunction: BlendFunction.SCREEN,
+      luminanceThreshold: 0.5,
+      luminanceSmoothing: 0.3,
+      mipmapBlur: true,
+      intensity: 0.9,
+      radius: 0.7,
+      levels: 6
+    });
+    // offset stays at zero until a Tetris kicks it
+    caFx = new ChromaticAberrationEffect({
+      offset: new THREE.Vector2(0, 0),
+      radialModulation: true,
+      modulationOffset: 0.4
+    });
+    // starts well out towards the corners and stays shallow: a frame for the
+    // board, not a letterbox
+    vignetteFx = new VignetteEffect({ offset: 0.45, darkness: 0.26 });
+    // tone mapping runs last, on the bloomed HDR buffer, so the renderer must
+    // not also tone map on the way into that buffer (applyPost handles that)
+    toneFx = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
+    composer.addPass(new EffectPass(camera, bloomFx, caFx, vignetteFx, toneFx));
+    postReady = true;
+  } catch (e) {
+    // no WebGL2 / no half-float: fall back to plain rendering rather than die
+    postReady = false;
+    composer = null;
+    FX_ON.post = false;
+  }
+}
+
+// Tone mapping lives either in the renderer or in the composer, never both.
+function applyToneMapping() {
+  const viaPost = FX_ON.post && postReady;
+  renderer.toneMapping = (FX_ON.lighting && !viaPost) ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = FX_ON.lighting ? 1.15 : 1.0;
+  if (toneFx) toneFx.blendMode.opacity.value = FX_ON.lighting ? 1 : 0;
+
+  // The grid lines are unlit and translucent, so where they are blended decides
+  // how bright they land. Rendering straight to the canvas blends them against
+  // already-encoded pixels; through the composer they blend in linear space and
+  // the same alpha reads several times brighter once it is encoded at the end.
+  if (gridLines) {
+    gridLines.material.opacity = viaPost ? 0.045 : (FX_ON.lighting ? 0.17 : 0.10);
+  }
+}
+
+function applyPost() {
+  const sw = document.getElementById('swPost');
+  if (!postReady && sw) {
+    sw.setAttribute('aria-checked', 'false');
+    sw.disabled = true;
+    sw.title = 'Not supported on this device';
+  }
+  const viaPost = FX_ON.post && postReady;
+  // EffectComposer turns autoClear off because its passes clear for themselves;
+  // going back to a plain render with it still off would smear frame over frame.
+  renderer.autoClear = !viaPost;
+  if (!viaPost) caFx && caFx.offset.set(0, 0);
+  applyToneMapping();
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (composer && w > 0 && h > 0) composer.setSize(w, h);
 }
 
 // Room-lit PMREM used as scene.environment: gives every material real
@@ -1152,16 +1243,13 @@ function makeRoomEnv() {
 // original flat one, so the settings toggle is a true A/B.
 function applyLighting() {
   const on = FX_ON.lighting;
-  renderer.toneMapping = on ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
-  renderer.toneMappingExposure = on ? 1.15 : 1.0;
+  applyToneMapping();
   renderer.shadowMap.enabled = on;
   renderer.shadowMap.needsUpdate = on;   // autoUpdate is off, so prime it by hand
   lastShadowSig = '';
   scene.environment = on ? roomEnv : null;
   scene.environmentIntensity = on ? 0.55 : 0;
   // with IBL carrying the base, the lamps drop back to shaping and shadow duty
-  // filmic tone mapping crushes the faint unlit grid lines, so lift them back
-  if (gridLines) gridLines.material.opacity = on ? 0.17 : 0.10;
   ambLight.intensity = on ? 0.18 : 0.72;
   keyLight.intensity = on ? 1.45 : 0.42;
   rimLight.intensity = on ? 0.55 : 0.14;
@@ -1914,6 +2002,29 @@ function fxCell(cube, m, cell, px, py, p, time) {
   return true;
 }
 
+// --- Tetris colour-split kick ---
+// A short, hard-decaying offset on the chromatic aberration effect: a jolt on
+// impact rather than a wobble that hangs around.
+const CA_PULSE_MS = 420;
+function kickCaPulse(strength) {
+  caPulseStart = performance.now();
+  caPulsePeak = strength;
+}
+function updateCaPulse() {
+  if (!caFx) return;
+  if (caPulseStart < 0) return;
+  const t = (performance.now() - caPulseStart) / CA_PULSE_MS;
+  if (t >= 1) {
+    caFx.offset.set(0, 0);
+    caPulseStart = -1;
+    return;
+  }
+  // snap to full strength then fall away
+  const env = Math.pow(1 - t, 2.2) * Math.min(1, t * 14);
+  const v = caPulsePeak * env;
+  caFx.offset.set(v, v * 0.55);
+}
+
 // gather all visible cells (locked grid + active piece) as {x,y,color,clearing}
 function collectCells() {
   const cells = [];
@@ -2047,7 +2158,10 @@ function renderBoard3D(time) {
       lastShadowSig = sig;
     }
   }
-  renderer.render(scene, camera);
+
+  updateCaPulse();
+  if (FX_ON.post && postReady) composer.render();
+  else renderer.render(scene, camera);
 }
 
 
@@ -2262,13 +2376,14 @@ infoModal.addEventListener('click', (e) => { if (e.target === infoModal) closeIn
 // Each switch flips one FX_ON flag and calls its apply fn, so every group can
 // be compared on/off without a reload.
 const settingsModal = document.getElementById('settingsModal');
-const FX_APPLY = { lighting: applyLighting };
+const FX_APPLY = { lighting: applyLighting, post: applyPost };
 function bindSwitch(id, key) {
   const el = document.getElementById(id);
   if (!el) return;
   const paint = () => el.setAttribute('aria-checked', FX_ON[key] ? 'true' : 'false');
   const hit = (e) => {
     e.preventDefault();
+    if (el.disabled) return;
     FX_ON[key] = !FX_ON[key];
     paint();
     saveFxSettings();
@@ -2280,6 +2395,7 @@ function bindSwitch(id, key) {
   paint();
 }
 bindSwitch('swLighting', 'lighting');
+bindSwitch('swPost', 'post');
 function openSettings() {
   if (running && !paused) togglePause();
   settingsModal.classList.add('show');
@@ -2461,6 +2577,7 @@ function fitBoard() {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    if (composer) composer.setSize(w, h);
   }
 }
 
