@@ -4,7 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Tetris</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
@@ -276,7 +283,7 @@
     margin-top: 12px;
     line-height: 1.5;
   }
-  #infoClose {
+  #infoClose, #settingsClose {
     margin-top: 16px;
     width: 100%;
     background: #4f46e5;
@@ -287,14 +294,63 @@
     font-size: 15px;
     cursor: pointer;
   }
-  #infoClose:active { background: #6366f1; }
+  #infoClose:active, #settingsClose:active { background: #6366f1; }
+
+  /* --- settings panel (one toggle per effect group) --- */
+  #settingsModal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 51;
+    padding: 20px;
+  }
+  #settingsModal.show { display: flex; }
+  .set-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+  }
+  .set-row + .set-row { border-top: 1px solid #2b3443; }
+  .set-label { font-size: 14px; color: #e5e7eb; }
+  .set-sub { font-size: 11px; color: #9ca3af; margin-top: 2px; line-height: 1.35; }
+  .set-sw {
+    flex: 0 0 auto;
+    width: 46px;
+    height: 27px;
+    border-radius: 14px;
+    border: none;
+    background: #374151;
+    position: relative;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: background 0.18s ease;
+    padding: 0;
+  }
+  .set-sw::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    transition: transform 0.18s ease;
+  }
+  .set-sw[aria-checked="true"] { background: #4f46e5; }
+  .set-sw[aria-checked="true"]::after { transform: translateX(19px); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v40</div>
+      <div id="versionBadge">v41</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -312,6 +368,7 @@
         <canvas id="nextCanvas" width="120" height="80"></canvas>
       </div>
       <div class="btnrow">
+        <button class="tbtn" id="btnSettings" aria-label="Settings">⚙</button>
         <button class="tbtn" id="btnSwap">⇄</button>
         <button class="tbtn" id="btnPause">⏸</button>
       </div>
@@ -341,9 +398,25 @@
       <button id="infoClose">Got it</button>
     </div>
   </div>
+  <div id="settingsModal">
+    <div class="info-card">
+      <h2>Effects</h2>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Lighting &amp; materials</div>
+          <div class="set-sub">Environment lighting, filmic tone mapping, glossy materials, soft shadows.</div>
+        </div>
+        <button class="set-sw" id="swLighting" role="switch" aria-checked="true" aria-label="Lighting and materials"></button>
+      </div>
+      <button id="settingsClose">Done</button>
+    </div>
+  </div>
 </div>
 
-<script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
 const COLS = 10, ROWS = 20, SIZE = 30;
 const canvas = document.getElementById('board');
 const nextCanvas = document.getElementById('nextCanvas');
@@ -351,6 +424,20 @@ const nctx = nextCanvas.getContext('2d');
 const overlay = document.getElementById('overlay');
 const overlayText = document.getElementById('overlayText');
 const overlayBtn = document.getElementById('overlayBtn');
+
+// ---- effect settings (one flag per group; each phase adds its own) ----
+// Persisted so a comparison survives a reload on the phone.
+const FX_DEFAULTS = { lighting: true };
+const FX_ON = Object.assign({}, FX_DEFAULTS);
+try {
+  const saved = JSON.parse(localStorage.getItem('tetrisFx') || '{}');
+  for (const k of Object.keys(FX_DEFAULTS)) {
+    if (typeof saved[k] === 'boolean') FX_ON[k] = saved[k];
+  }
+} catch (e) { /* private mode / blocked storage: keep defaults */ }
+function saveFxSettings() {
+  try { localStorage.setItem('tetrisFx', JSON.stringify(FX_ON)); } catch (e) {}
+}
 
 const THEMES = [
   // Classic multicolor beveled
@@ -766,14 +853,21 @@ function tryRotate() {
 // ============================================================
 //  THREE.JS 3D BOARD RENDERER
 // ============================================================
-let renderer, scene, camera, boardGroup, envMap;
+let renderer, scene, camera, boardGroup, envMap, roomEnv;
+let ambLight, keyLight, rimLight;
+let lastShadowSig = '';
 let cubePool = [];
 const CUBE_GEO = new THREE.BoxGeometry(0.86, 0.86, 0.34);
 // Bake per-face brightness into vertex colors so the front face reads at full
 // color while the top, sides and bottom drop into deep shadow. BoxGeometry
 // vertex order is +X, -X, +Y, -Y, +Z, -Z, four verts per face.
-(function shadeCubeFaces() {
-  const FACE = [0.30, 0.24, 0.34, 0.16, 1.00, 0.10]; // +X -X +Y -Y +Z(front) -Z
+// These multiply against whatever the lights produce, so when real environment
+// lighting is on the side faces are lifted well clear of black and let the IBL
+// do the shading; with it off we keep the original hand-painted falloff.
+const FACE_FLAT = [0.30, 0.24, 0.34, 0.16, 1.00, 0.10];  // +X -X +Y -Y +Z(front) -Z
+const FACE_LIT  = [0.55, 0.48, 0.62, 0.36, 1.00, 0.28];
+function shadeCubeFaces(lit) {
+  const FACE = lit ? FACE_LIT : FACE_FLAT;
   const n = CUBE_GEO.attributes.position.count;
   const col = new Float32Array(n * 3);
   for (let v = 0; v < n; v++) {
@@ -781,7 +875,8 @@ const CUBE_GEO = new THREE.BoxGeometry(0.86, 0.86, 0.34);
     col[v*3] = col[v*3+1] = col[v*3+2] = f;
   }
   CUBE_GEO.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-})();
+}
+shadeCubeFaces(FX_ON.lighting);
 let backPanel, gridLines;
 
 function hexToNum(hex) {
@@ -823,7 +918,7 @@ function texCanvas(draw, size) {
   const t = new THREE.CanvasTexture(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = 4;
-  t.encoding = THREE.sRGBEncoding;
+  t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 function chiselEdges(g, S) {
@@ -951,18 +1046,27 @@ function getTexture(name) {
   return TEXCACHE[name];
 }
 
+// Physical rather than Standard so metal themes can carry a clearcoat lobe.
+// clearcoat is seeded above zero and never driven back to exactly zero: three
+// compiles the clearcoat chunk in or out on that test, and flipping it per
+// theme would recompile all 200-odd materials mid-game.
+const CC_MIN = 0.02;
 function makeCubeMaterial() {
-  return new THREE.MeshStandardMaterial({
+  return new THREE.MeshPhysicalMaterial({
     color: 0xffffff, metalness: 0.1, roughness: 0.5, vertexColors: true,
-    transparent: true, opacity: 1, envMap: envMap, envMapIntensity: 1
+    transparent: true, opacity: 1, envMap: envMap, envMapIntensity: 1,
+    clearcoat: CC_MIN, clearcoatRoughness: 0.3
   });
 }
 function initThree() {
   renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMapping = THREE.NoToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Pieces only move in discrete steps, so re-rendering the shadow map every
+  // frame would be a second pass over 200-odd meshes for an identical result.
+  // renderBoard3D re-runs it only when the board actually changed.
+  renderer.shadowMap.autoUpdate = false;
   scene = new THREE.Scene();
 
   const VIEW_H = 23;
@@ -975,21 +1079,37 @@ function initThree() {
   boardGroup.rotation.x = 0.22;     // tilted forward enough to read the 3D faces
   scene.add(boardGroup);
 
-  // lighting — angled key dominates for face definition; minimal frontal fill
-  scene.add(new THREE.AmbientLight(0xffffff, 0.72));
-  const key = new THREE.DirectionalLight(0xffffff, 0.42);
-  key.position.set(2, 6, 14);
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0x99bbff, 0.14);
-  rim.position.set(-6, 2, 8);
-  scene.add(rim);
+  // lighting — angled key dominates for face definition; minimal frontal fill.
+  // Intensities are swapped wholesale by applyLighting(): environment lighting
+  // carries most of the load when it is on, so the lights sit much lower then.
+  ambLight = new THREE.AmbientLight(0xffffff, 0.72);
+  scene.add(ambLight);
+  keyLight = new THREE.DirectionalLight(0xffffff, 0.42);
+  keyLight.position.set(2, 6, 14);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(512, 512);
+  keyLight.shadow.radius = 3;
+  keyLight.shadow.bias = -0.0012;
+  keyLight.shadow.normalBias = 0.02;
+  // ortho shadow frustum sized to the board, so all 512 texels land on play area
+  const sc = keyLight.shadow.camera;
+  sc.left = -(COLS / 2 + 2); sc.right = COLS / 2 + 2;
+  sc.top = ROWS / 2 + 2; sc.bottom = -(ROWS / 2 + 2);
+  sc.near = 0.5; sc.far = 60;
+  sc.updateProjectionMatrix();
+  scene.add(keyLight);
+  rimLight = new THREE.DirectionalLight(0x99bbff, 0.14);
+  rimLight.position.set(-6, 2, 8);
+  scene.add(rimLight);
 
   envMap = makeEnvMap();
+  roomEnv = makeRoomEnv();
 
   // back panel for depth + faint column guides (kept very dark for contrast)
   const panelMat = new THREE.MeshStandardMaterial({ color: 0x04060a, metalness: 0.2, roughness: 0.95 });
   backPanel = new THREE.Mesh(new THREE.PlaneGeometry(COLS + 0.4, ROWS + 0.4), panelMat);
   backPanel.position.z = -0.6;
+  backPanel.receiveShadow = true;
   boardGroup.add(backPanel);
 
   const linePts = [];
@@ -1011,10 +1131,58 @@ function initThree() {
   for (let i = 0; i < COLS * ROWS + 8; i++) {
     const cube = new THREE.Mesh(CUBE_GEO, makeCubeMaterial());
     cube.visible = false;
+    cube.castShadow = true;
     boardGroup.add(cube);
     cubePool.push(cube);
   }
 
+  applyLighting();
+}
+
+// Room-lit PMREM used as scene.environment: gives every material real
+// image-based lighting instead of three flat lamps.
+function makeRoomEnv() {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const rt = pmrem.fromScene(new RoomEnvironment(), 0.04);
+  pmrem.dispose();
+  return rt.texture;
+}
+
+// Switches the whole lighting/material model between the enhanced look and the
+// original flat one, so the settings toggle is a true A/B.
+function applyLighting() {
+  const on = FX_ON.lighting;
+  renderer.toneMapping = on ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = on ? 1.15 : 1.0;
+  renderer.shadowMap.enabled = on;
+  renderer.shadowMap.needsUpdate = on;   // autoUpdate is off, so prime it by hand
+  lastShadowSig = '';
+  scene.environment = on ? roomEnv : null;
+  scene.environmentIntensity = on ? 0.55 : 0;
+  // with IBL carrying the base, the lamps drop back to shaping and shadow duty
+  // filmic tone mapping crushes the faint unlit grid lines, so lift them back
+  if (gridLines) gridLines.material.opacity = on ? 0.17 : 0.10;
+  ambLight.intensity = on ? 0.18 : 0.72;
+  keyLight.intensity = on ? 1.45 : 0.42;
+  rimLight.intensity = on ? 0.55 : 0.14;
+  keyLight.position.set(on ? 5 : 2, on ? 9 : 6, on ? 11 : 14);
+  shadeCubeFaces(on);
+  // A material with its own envMap ignores scene.environment entirely, so the
+  // little gradient map has to step aside for the room IBL to reach anything.
+  for (const cube of cubePool) {
+    cube.material.envMap = on ? null : envMap;
+    cube.material.needsUpdate = true;   // envMap + shadow defines both changed
+  }
+  if (backPanel) backPanel.material.needsUpdate = true;
+  for (const k in fxMats) {
+    const mat = fxMats[k];
+    if (!mat) continue;
+    if (mat.userData.hasEnvMap) {
+      mat.envMap = on ? null : envMap;
+      mat.envMapIntensity = on ? 1.0 : 0.7;
+    }
+    mat.needsUpdate = true;
+  }
 }
 
 // ============================================================
@@ -1051,6 +1219,7 @@ function additive(hex, opacity) {
 function initFxProps() {
   const M = fxMats;
   M.steel  = new THREE.MeshStandardMaterial({ color: 0x39424d, metalness: 0.8, roughness: 0.4, envMap: envMap, envMapIntensity: 0.7 });
+  M.steel.userData.hasEnvMap = true;   // applyLighting swaps this for the room IBL
   M.dark   = new THREE.MeshStandardMaterial({ color: 0x1b1f25, metalness: 0.6, roughness: 0.6 });
   M.paint  = new THREE.MeshStandardMaterial({ color: 0xf2b01e, metalness: 0.35, roughness: 0.55 });
   M.army   = new THREE.MeshStandardMaterial({ color: 0x4a5340, metalness: 0.3, roughness: 0.8 });
@@ -1751,13 +1920,13 @@ function collectCells() {
   const clearSet = clearing ? new Set(clearRows) : null;
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
-      if (grid[y][x]) cells.push({ x, y, color: grid[y][x], clr: clearSet ? clearSet.has(y) : false });
+      if (grid[y][x]) cells.push({ x, y, color: grid[y][x], clr: clearSet ? clearSet.has(y) : false, act: false });
     }
   }
   if (!clearing) {
     for (const [cx, cy] of current.cells) {
       const x = cx + pos.x, y = cy + pos.y;
-      if (y >= 0) cells.push({ x, y, color: current.color, clr: false });
+      if (y >= 0) cells.push({ x, y, color: current.color, clr: false, act: true });
     }
   }
   return cells;
@@ -1776,6 +1945,7 @@ function renderBoard3D(time) {
   const cells = collectCells();
   let ci = 0;
   const tex = getTexture(style);
+  const lit = FX_ON.lighting;
 
   for (const cell of cells) {
     const px = cell.x - (COLS - 1) / 2;
@@ -1799,7 +1969,9 @@ function renderBoard3D(time) {
       // liquid mercury / polished metal
       m.metalness = 0.85;
       m.roughness = 0.28;
-      m.envMapIntensity = 0.85;
+      m.envMapIntensity = lit ? 1.15 : 0.85;
+      m.clearcoat = lit ? 0.55 : CC_MIN;
+      m.clearcoatRoughness = 0.12;
     } else if (style === 'glow') {
       // neon: emissive with a gentle pulse (kept in range so it doesn't blow out)
       m.metalness = 0.0;
@@ -1807,23 +1979,41 @@ function renderBoard3D(time) {
       m.color.setHex(colNum);
       m.emissive.setHex(colNum);
       m.emissiveIntensity = 0.28 + 0.08 * Math.sin(time * 0.004 + cell.x + cell.y);
+      // a thin gloss coat reads as the glass around the tube
+      m.clearcoat = lit ? 0.45 : CC_MIN;
+      m.clearcoatRoughness = 0.22;
     } else if (style === 'granite' || style === 'basalt' || style === 'marble') {
       // chiseled stone: rough, non-metallic, texture does the work
       m.metalness = 0.0;
       m.roughness = style === 'marble' ? 0.45 : 0.8;
-      m.envMapIntensity = style === 'marble' ? 0.35 : 0.18;
+      m.envMapIntensity = (style === 'marble' ? 0.35 : 0.18) * (lit ? 1.6 : 1);
       m.bumpScale = style === 'marble' ? 0.35 : 0.55;
+      // marble takes a polish; granite and basalt stay raw
+      m.clearcoat = lit && style === 'marble' ? 0.5 : CC_MIN;
+      m.clearcoatRoughness = 0.3;
     } else if (style === 'brushed' || style === 'hammered') {
-      // worked metal: reflective, but rough enough to keep the color readable
+      // worked metal: reflective, but rough enough to keep the color readable.
+      // The coat is what makes these read as lacquered steel rather than putty.
       m.metalness = 0.6;
       m.roughness = style === 'brushed' ? 0.4 : 0.32;
-      m.envMapIntensity = 0.7;
+      m.envMapIntensity = lit ? 1.0 : 0.7;
       m.bumpScale = 0.5;
+      m.clearcoat = lit ? (style === 'brushed' ? 0.8 : 0.65) : CC_MIN;
+      m.clearcoatRoughness = style === 'brushed' ? 0.25 : 0.18;
     } else {
       // bevel: matte plastic block
       m.metalness = 0.0;
       m.roughness = 0.85;
-      m.envMapIntensity = 0.12;
+      m.envMapIntensity = lit ? 0.35 : 0.12;
+      m.clearcoat = lit ? 0.25 : CC_MIN;
+      m.clearcoatRoughness = 0.45;
+    }
+
+    // the falling piece carries a faint emissive lift so it stays readable
+    // against a tall stack; glow themes already light themselves
+    if (lit && cell.act && style !== 'glow') {
+      m.emissive.setHex(colNum);
+      m.emissiveIntensity = 0.16;
     }
 
     // clear animation: an effect takes over for triples/tetrises, otherwise flash
@@ -1844,6 +2034,19 @@ function renderBoard3D(time) {
   boardGroup.rotation.x = BASE_TILT_X + userRotX;
   boardGroup.rotation.y = BASE_TILT_Y + userRotY;
   boardGroup.rotation.z = userRotZ;
+
+  // Refresh the shadow map only when something that casts one has moved:
+  // during a clear everything is in flight, otherwise a cheap signature of the
+  // piece position, board contents and orientation decides.
+  if (FX_ON.lighting) {
+    const sig = clearing ? 'c' + clearP.toFixed(3)
+      : pos.x + ',' + pos.y + ',' + cells.length + ',' + themeIndex + ',' +
+        userRotX.toFixed(2) + ',' + userRotY.toFixed(2) + ',' + userRotZ.toFixed(2);
+    if (sig !== lastShadowSig) {
+      renderer.shadowMap.needsUpdate = true;
+      lastShadowSig = sig;
+    }
+  }
   renderer.render(scene, camera);
 }
 
@@ -2055,6 +2258,41 @@ infoCloseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); closeIn
 infoCloseBtn.addEventListener('click', (e) => { e.preventDefault(); closeInfo(); });
 infoModal.addEventListener('click', (e) => { if (e.target === infoModal) closeInfo(); });
 
+// --- Settings panel ---
+// Each switch flips one FX_ON flag and calls its apply fn, so every group can
+// be compared on/off without a reload.
+const settingsModal = document.getElementById('settingsModal');
+const FX_APPLY = { lighting: applyLighting };
+function bindSwitch(id, key) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const paint = () => el.setAttribute('aria-checked', FX_ON[key] ? 'true' : 'false');
+  const hit = (e) => {
+    e.preventDefault();
+    FX_ON[key] = !FX_ON[key];
+    paint();
+    saveFxSettings();
+    if (FX_APPLY[key]) FX_APPLY[key]();
+    renderBoard3D(performance.now());
+  };
+  el.addEventListener('touchstart', hit);
+  el.addEventListener('click', hit);
+  paint();
+}
+bindSwitch('swLighting', 'lighting');
+function openSettings() {
+  if (running && !paused) togglePause();
+  settingsModal.classList.add('show');
+}
+function closeSettings() { settingsModal.classList.remove('show'); }
+const settingsBtn = document.getElementById('btnSettings');
+settingsBtn.addEventListener('touchstart', (e) => { e.preventDefault(); openSettings(); });
+settingsBtn.addEventListener('click', (e) => { e.preventDefault(); openSettings(); });
+const settingsCloseBtn = document.getElementById('settingsClose');
+settingsCloseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); closeSettings(); });
+settingsCloseBtn.addEventListener('click', (e) => { e.preventDefault(); closeSettings(); });
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+
 function toggleSwap() {
   document.querySelector('.wrap').classList.toggle('swapped');
 }
@@ -2254,6 +2492,31 @@ overlay.style.display = 'flex';
 setTimeout(fitBoard, 100);
 setTimeout(fitBoard, 400);
 requestAnimationFrame(() => { fitBoard(); requestAnimationFrame(gameLoop); });
+
+// --- Service worker: offline shell + a cache name that changes every release,
+// so an installed Home Screen copy picks up the new version on next launch ---
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    // On a first install the worker claims this page and fires controllerchange
+    // straight away; only a *replacement* worker means the assets changed under
+    // us and is worth a reload.
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (sw) sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) sw.postMessage('skipWaiting');
+        });
+      });
+    }).catch(() => { /* file:// or unsupported: game still runs */ });
+  });
+}
 </script>
 </body>
 </html>
