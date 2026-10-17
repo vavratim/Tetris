@@ -309,6 +309,12 @@
     padding: 20px;
   }
   #settingsModal.show { display: flex; }
+  #settingsModal .info-card {
+    max-height: calc(100vh - 80px);
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
   .set-row {
     display: flex;
     align-items: center;
@@ -351,7 +357,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v43</div>
+      <div id="versionBadge">v44</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -369,6 +375,7 @@
         <canvas id="nextCanvas" width="120" height="80"></canvas>
       </div>
       <div class="btnrow">
+        <button class="tbtn" id="btnMute" aria-label="Mute">🔊</button>
         <button class="tbtn" id="btnSettings" aria-label="Settings">⚙</button>
         <button class="tbtn" id="btnSwap">⇄</button>
         <button class="tbtn" id="btnPause">⏸</button>
@@ -437,6 +444,27 @@
         </div>
         <button class="set-sw" id="swImpact" role="switch" aria-checked="true" aria-label="Impact and pop-ups"></button>
       </div>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Background</div>
+          <div class="set-sub">Drifting nebula and grid behind the well, tinted by level and flashing on clears.</div>
+        </div>
+        <button class="set-sw" id="swBackground" role="switch" aria-checked="true" aria-label="Background"></button>
+      </div>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Sound</div>
+          <div class="set-sub">Move, rotate, lock, clear and Tetris effects. Same as the speaker button.</div>
+        </div>
+        <button class="set-sw" id="swSound" role="switch" aria-checked="true" aria-label="Sound"></button>
+      </div>
+      <div class="set-row">
+        <div>
+          <div class="set-label">Music</div>
+          <div class="set-sub">Backing loop that speeds up as the level climbs.</div>
+        </div>
+        <button class="set-sw" id="swMusic" role="switch" aria-checked="true" aria-label="Music"></button>
+      </div>
       <button id="settingsClose">Done</button>
     </div>
   </div>
@@ -460,7 +488,8 @@ const overlayBtn = document.getElementById('overlayBtn');
 
 // ---- effect settings (one flag per group; each phase adds its own) ----
 // Persisted so a comparison survives a reload on the phone.
-const FX_DEFAULTS = { lighting: true, post: true, shake: true, particles: true, impact: true };
+const FX_DEFAULTS = { lighting: true, post: true, shake: true, particles: true, impact: true,
+                      background: true, sound: true, music: true };
 const FX_ON = Object.assign({}, FX_DEFAULTS);
 try {
   const saved = JSON.parse(localStorage.getItem('tetrisFx') || '{}');
@@ -650,6 +679,7 @@ function initGame() {
   comboCount = 0; lastClearWasTetris = false;
   lockAnim = null; shakeStart = 0; pushStart = 0;
   resetParticles(); resetPopups();
+  bgPulse = 0; bgLevelSeen = -1; setBgPalette(1, true);
   document.getElementById('overlayScores').innerHTML = '';
   updateStats();
   refreshBest();
@@ -781,6 +811,8 @@ function startClear(rows) {
   clearFxSeed = Math.random();
   clearDuration = clearFx ? FX_DURATION[clearFx] : (clearCount === 3 ? 320 : 190);
   if (clearCount >= 4) kickCaPulse(0.0045);    // Tetrises only
+  pulseBackground(clearCount >= 4 ? 1.0 : 0.3 + clearCount * 0.12);
+  if (clearCount >= 4) sfx.tetris(); else sfx.clear(clearCount);
 
   // --- combo / back-to-back bookkeeping (display only; scoring is unchanged) ---
   comboCount++;
@@ -830,7 +862,9 @@ function finishClear() {
   const points = [0, 100, 300, 500, 800][cleared] * level;
   score += points;
   lines += cleared;
+  const prevLevel = level;
   level = Math.floor(lines / 10) + 1;
+  if (level > prevLevel) sfx.levelUp();
   dropInterval = Math.max(100, 800 - (level - 1) * 70);
 
   clearing = false;
@@ -869,6 +903,7 @@ function endGame() {
     '<div style="margin-top:6px;font-weight:bold;color:#9ca3af;">TOP SCORES</div>' + rows;
   overlayBtn.textContent = 'Restart';
   overlay.style.display = 'flex';
+  sfx.gameOver();
   refreshBest();
 }
 
@@ -897,6 +932,7 @@ function lockPiece(fromHardDrop) {
 
   // hard drop lands harder than gravity does
   shake(fromHardDrop ? 0.11 : 0.045, fromHardDrop ? 230 : 160);
+  if (fromHardDrop) sfx.drop(); else sfx.lock();
   if (lowY >= 0) {
     const py = (ROWS - 1) / 2 - lowY - 0.5;
     for (const key of landed) {
@@ -921,7 +957,7 @@ function lockPiece(fromHardDrop) {
 
 function move(dx) {
   if (clearing) return;
-  if (!collide(current.cells, pos.x + dx, pos.y)) pos.x += dx;
+  if (!collide(current.cells, pos.x + dx, pos.y)) { pos.x += dx; sfx.move(); }
 }
 
 function softDrop() {
@@ -947,6 +983,7 @@ function tryRotate() {
     if (!collide(norm, pos.x + k, pos.y)) {
       current.cells = norm;
       pos.x += k;
+      sfx.rotate();
       return;
     }
   }
@@ -1240,9 +1277,11 @@ function initThree() {
     cubePool.push(cube);
   }
 
+  initBackground();
   initParticles();
   initPost();
   applyLighting();
+  applyBackground();
   applyPost();
 }
 
@@ -2116,6 +2155,137 @@ function updateCaPulse() {
 }
 
 // ============================================================
+//  ANIMATED BACKGROUND  (drifting nebula + grid, behind the board)
+// ============================================================
+// Lives in the scene rather than boardGroup, so it stays put while the board
+// tilts and shakes. The tone-mapping and colour-space chunks are included by
+// hand because a raw ShaderMaterial gets neither for free, and without them it
+// would look different through the composer than straight to the canvas.
+let bgMesh, bgPulse = 0, bgPulseStart = 0, bgLevelSeen = -1;
+const bgColA = new THREE.Color(), bgColB = new THREE.Color();
+const bgTargetA = new THREE.Color(), bgTargetB = new THREE.Color();
+
+const BG_VERT = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const BG_FRAG = `
+varying vec2 vUv;
+uniform float uTime;
+uniform float uPulse;
+uniform vec3 uColA;
+uniform vec3 uColB;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+// Two octaves, not three: this sits behind a mostly opaque panel, so the third
+// octave cost four more hashes per pixel for detail nobody can see.
+float fbm(vec2 p) {
+  float v = 0.0, amp = 0.5;
+  for (int i = 0; i < 2; i++) { v += amp * vnoise(p); p = p * 2.03 + 7.1; amp *= 0.5; }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 p = uv * vec2(1.7, 3.2);
+  float t = uTime * 0.02;
+  float n  = fbm(p + vec2(t, -t * 0.6));
+  float n2 = fbm(p * 1.7 + vec2(-t * 0.8, t * 0.45) + n);
+  float neb = pow(clamp(n * 0.55 + n2 * 0.65, 0.0, 1.0), 2.3);
+
+  vec3 col = mix(uColA, uColB, clamp(n2 + uPulse * 0.35, 0.0, 1.0)) * neb;
+
+  // faint grid drifting upward, so the void behind the well still has structure
+  vec2 g = fract(uv * vec2(9.0, 18.0) + vec2(0.0, t * 0.6));
+  float line = smoothstep(0.97, 1.0, max(g.x, g.y));
+  col += uColB * line * (0.035 + uPulse * 0.10);
+
+  col += uColB * uPulse * 0.09;                       // clears wash the whole field
+  float d = distance(uv, vec2(0.5));
+  col *= mix(0.12, 1.0, smoothstep(0.95, 0.20, d));   // keep the edges quiet
+
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+function initBackground() {
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: BG_VERT,
+    fragmentShader: BG_FRAG,
+    uniforms: {
+      uTime:  { value: 0 },
+      uPulse: { value: 0 },
+      uColA:  { value: new THREE.Color(0x101a3a) },
+      uColB:  { value: new THREE.Color(0x3a6ea8) }
+    },
+    depthWrite: false,
+    depthTest: false
+  });
+  // the ortho frustum never changes, so a generous fixed plane always covers it
+  bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(17, 29), mat);
+  bgMesh.position.z = -30;
+  bgMesh.renderOrder = -999;
+  bgMesh.frustumCulled = false;
+  scene.add(bgMesh);
+  setBgPalette(1, true);
+}
+
+// level drives the palette; a slow lerp keeps the change from snapping
+function setBgPalette(lvl, immediate) {
+  const h = ((lvl - 1) * 0.11) % 1;
+  // setHSL defaults to the linear working space, unlike setHex which defaults
+  // to sRGB; without saying so these would come out about four times too light
+  bgTargetA.setHSL(h, 0.55, 0.10, THREE.SRGBColorSpace);
+  bgTargetB.setHSL((h + 0.12) % 1, 0.70, 0.42, THREE.SRGBColorSpace);
+  if (immediate) { bgColA.copy(bgTargetA); bgColB.copy(bgTargetB); }
+}
+
+function pulseBackground(strength) {
+  bgPulse = Math.max(bgPulse, strength);
+  bgPulseStart = performance.now();
+}
+
+function updateBackground(now) {
+  if (!bgMesh || !FX_ON.background) return;
+  const u = bgMesh.material.uniforms;
+  u.uTime.value = now * 0.001;
+  if (level !== bgLevelSeen) { bgLevelSeen = level; setBgPalette(level, false); }
+  bgColA.lerp(bgTargetA, 0.02);
+  bgColB.lerp(bgTargetB, 0.02);
+  u.uColA.value.copy(bgColA);
+  u.uColB.value.copy(bgColB);
+  if (bgPulse > 0) {
+    const t = (now - bgPulseStart) / 700;
+    u.uPulse.value = t >= 1 ? (bgPulse = 0) : bgPulse * Math.pow(1 - t, 2);
+  } else {
+    u.uPulse.value = 0;
+  }
+}
+
+function applyBackground() {
+  if (!bgMesh) return;
+  const on = FX_ON.background;
+  bgMesh.visible = on;
+  // let the nebula glow faintly through the well; opaque again when it is off
+  if (backPanel) {
+    backPanel.material.transparent = on;
+    backPanel.material.opacity = on ? 0.76 : 1;
+    backPanel.material.needsUpdate = true;
+  }
+}
+
+// ============================================================
 //  JUICE  (shake, lock squash, sparks, pop-up text, camera push)
 // ============================================================
 const JC = new THREE.Color();   // scratch colour, kept away from the FX one
@@ -2377,6 +2547,191 @@ function updateJuice(now) {
   updatePush(now);
 }
 
+// ============================================================
+//  SOUND  (Web Audio, synthesised — no audio files to ship or cache)
+// ============================================================
+// iOS will not let an AudioContext make noise until a real user gesture has
+// happened, so nothing is created until the first touch, click or key.
+let actx = null, masterGain = null, sfxGain = null, musicGain = null, musicFilter = null;
+let audioReady = false, noiseBuf = null;
+
+function initAudio() {
+  if (actx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { actx = new AC(); } catch (e) { return; }
+  masterGain = actx.createGain();
+  masterGain.gain.value = 0.9;
+  masterGain.connect(actx.destination);
+  sfxGain = actx.createGain();
+  sfxGain.gain.value = 0.5;
+  sfxGain.connect(masterGain);
+  musicFilter = actx.createBiquadFilter();
+  musicFilter.type = 'lowpass';
+  musicFilter.frequency.value = 2000;
+  musicFilter.connect(masterGain);
+  musicGain = actx.createGain();
+  musicGain.gain.value = 0;
+  musicGain.connect(musicFilter);
+  audioReady = true;
+  startMusicClock();
+}
+
+function unlockAudio() {
+  initAudio();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+for (const ev of ['touchstart', 'pointerdown', 'mousedown', 'keydown']) {
+  window.addEventListener(ev, unlockAudio, { passive: true });
+}
+document.addEventListener('visibilitychange', () => {
+  if (!actx) return;
+  if (document.hidden) actx.suspend();
+  else if (FX_ON.sound) actx.resume();
+});
+
+function sfxOn() { return audioReady && FX_ON.sound && actx.state === 'running'; }
+
+// a short pitched blip; every call is detuned a little so repeats never phase
+function blip(freq, dur, type, vol, slideTo) {
+  if (!sfxOn()) return;
+  const t = actx.currentTime;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type || 'square';
+  const f = freq * (0.97 + Math.random() * 0.06);
+  o.frequency.setValueAtTime(f, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, f * slideTo), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  o.connect(g); g.connect(sfxGain);
+  o.start(t); o.stop(t + dur + 0.03);
+}
+
+function noiseHit(dur, vol, freq, q) {
+  if (!sfxOn()) return;
+  if (!noiseBuf) {
+    const n = Math.floor(actx.sampleRate * 0.5);
+    noiseBuf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  }
+  const t = actx.currentTime;
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const bp = actx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = freq * (0.9 + Math.random() * 0.2);
+  bp.Q.value = q || 1.2;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  s.connect(bp); bp.connect(g); g.connect(sfxGain);
+  s.start(t); s.stop(t + dur + 0.02);
+}
+
+const sfx = {
+  move()   { blip(200, 0.045, 'square', 0.14); },
+  rotate() { blip(320, 0.06, 'triangle', 0.17, 1.22); },
+  lock()   { blip(96, 0.13, 'sine', 0.30, 0.55); noiseHit(0.07, 0.16, 900, 0.9); },
+  drop()   { blip(70, 0.17, 'sine', 0.34, 0.5); noiseHit(0.10, 0.22, 600, 0.8); },
+  clear(n) {
+    // a short rising run, one note per cleared row
+    const base = 440;
+    for (let i = 0; i < n; i++) {
+      const freq = base * Math.pow(2, [0, 4, 7, 12][i] / 12);
+      setTimeout(() => blip(freq, 0.16, 'triangle', 0.22, 1.01), i * 55);
+    }
+  },
+  tetris() {
+    const base = 440;
+    [0, 7, 12, 16, 19].forEach((st, i) => {
+      setTimeout(() => blip(base * Math.pow(2, st / 12), 0.30, 'square', 0.20, 1.005), i * 70);
+    });
+    noiseHit(0.35, 0.18, 2200, 0.7);
+  },
+  levelUp() {
+    [0, 5, 9, 12].forEach((st, i) => {
+      setTimeout(() => blip(523 * Math.pow(2, st / 12), 0.22, 'triangle', 0.18), i * 85);
+    });
+  },
+  gameOver() {
+    [0, -3, -7, -12].forEach((st, i) => {
+      setTimeout(() => blip(330 * Math.pow(2, st / 12), 0.38, 'sawtooth', 0.18, 0.92), i * 150);
+    });
+  }
+};
+
+// ---- background music: tempo climbs with the level ----
+// Scheduled a little ahead of the clock rather than fired from timers, so the
+// beat does not wander when the main thread is busy animating a clear.
+const MUSIC_BASS = [0, 0, -5, -3];
+const MUSIC_LEAD = [12, 15, 19, 15, 12, 15, 19, 22, 12, 15, 19, 15, 17, 14, 12, 10];
+const MUSIC_ROOT = 110;   // A2
+let musicTimer = null, nextStepTime = 0, musicStep = 0;
+
+function musicBpm() { return Math.min(188, 104 + (level - 1) * 7); }
+function musicWanted() { return audioReady && FX_ON.sound && FX_ON.music && running && !paused && !gameOver; }
+
+function musicNote(freq, when, dur, type, vol) {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, when);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.linearRampToValueAtTime(vol, when + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0008, when + dur);
+  o.connect(g); g.connect(musicGain);
+  o.start(when); o.stop(when + dur + 0.03);
+}
+
+function scheduleStep(i, when) {
+  if (i % 4 === 0) {
+    const st = MUSIC_BASS[(i / 4) % MUSIC_BASS.length];
+    musicNote(MUSIC_ROOT * Math.pow(2, st / 12), when, 0.42, 'triangle', 0.30);
+  }
+  const lead = MUSIC_LEAD[i % MUSIC_LEAD.length];
+  musicNote(MUSIC_ROOT * Math.pow(2, lead / 12), when, 0.16, 'square', 0.085);
+  if (i % 2 === 1 && noiseBuf) {
+    const s = actx.createBufferSource(); s.buffer = noiseBuf;
+    const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0.05, when);
+    g.gain.exponentialRampToValueAtTime(0.0008, when + 0.05);
+    s.connect(hp); hp.connect(g); g.connect(musicGain);
+    s.start(when); s.stop(when + 0.07);
+  }
+}
+
+function startMusicClock() {
+  if (musicTimer) return;
+  musicTimer = setInterval(() => {
+    if (!audioReady) return;
+    const on = musicWanted();
+    // ramp rather than switch, so starting and stopping never clicks
+    musicGain.gain.setTargetAtTime(on ? 0.5 : 0, actx.currentTime, 0.12);
+    if (!on) { nextStepTime = 0; return; }
+    if (actx.state !== 'running') return;
+    const step = 60 / musicBpm() / 4;             // sixteenth notes
+    if (!nextStepTime) { nextStepTime = actx.currentTime + 0.06; musicStep = 0; }
+    while (nextStepTime < actx.currentTime + 0.15) {
+      scheduleStep(musicStep, nextStepTime);
+      nextStepTime += step;
+      musicStep = (musicStep + 1) % 16;
+    }
+  }, 25);
+}
+
+function applySound() {
+  if (!audioReady) return;
+  if (FX_ON.sound && actx.state === 'suspended') actx.resume();
+  masterGain.gain.setTargetAtTime(FX_ON.sound ? 0.9 : 0, actx.currentTime, 0.05);
+  paintMuteButton();
+}
+
+function paintMuteButton() {
+  const b = document.getElementById('btnMute');
+  if (b) b.textContent = FX_ON.sound ? '🔊' : '🔇';
+}
+
 // gather all visible cells (locked grid + active piece) as {x,y,color,clearing}
 function collectCells() {
   const cells = [];
@@ -2514,6 +2869,7 @@ function renderBoard3D(time) {
   boardGroup.rotation.y = BASE_TILT_Y + userRotY;
   boardGroup.rotation.z = userRotZ;
 
+  updateBackground(time);
   updateJuice(time);
   const sh = shakeOffset(time);
   if (sh) {
@@ -2759,7 +3115,10 @@ const FX_APPLY = {
   post: applyPost,
   shake: () => { if (!FX_ON.shake) { shakeStart = 0; boardGroup.position.set(0, 0, 0); } },
   particles: () => { if (!FX_ON.particles) resetParticles(); },
-  impact: () => { if (!FX_ON.impact) { resetPopups(); lockAnim = null; pushStart = 0; } }
+  impact: () => { if (!FX_ON.impact) { resetPopups(); lockAnim = null; pushStart = 0; } },
+  background: applyBackground,
+  sound: applySound,
+  music: () => {}      // the scheduler reads the flag every tick
 };
 function bindSwitch(id, key) {
   const el = document.getElementById(id);
@@ -2783,6 +3142,9 @@ bindSwitch('swPost', 'post');
 bindSwitch('swShake', 'shake');
 bindSwitch('swParticles', 'particles');
 bindSwitch('swImpact', 'impact');
+bindSwitch('swBackground', 'background');
+bindSwitch('swSound', 'sound');
+bindSwitch('swMusic', 'music');
 function openSettings() {
   if (running && !paused) togglePause();
   settingsModal.classList.add('show');
@@ -2795,6 +3157,20 @@ const settingsCloseBtn = document.getElementById('settingsClose');
 settingsCloseBtn.addEventListener('touchstart', (e) => { e.preventDefault(); closeSettings(); });
 settingsCloseBtn.addEventListener('click', (e) => { e.preventDefault(); closeSettings(); });
 settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+
+const muteBtn = document.getElementById('btnMute');
+function toggleMute(e) {
+  e.preventDefault();
+  unlockAudio();                 // first tap may also be the gesture that starts audio
+  FX_ON.sound = !FX_ON.sound;
+  saveFxSettings();
+  applySound();
+  const sw = document.getElementById('swSound');
+  if (sw) sw.setAttribute('aria-checked', FX_ON.sound ? 'true' : 'false');
+}
+muteBtn.addEventListener('touchstart', toggleMute);
+muteBtn.addEventListener('click', toggleMute);
+paintMuteButton();
 
 function toggleSwap() {
   document.querySelector('.wrap').classList.toggle('swapped');
