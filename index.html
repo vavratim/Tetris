@@ -357,7 +357,7 @@
 <div class="wrap">
   <div class="topbar">
     <div class="toprow">
-      <div id="versionBadge">v44</div>
+      <div id="versionBadge">v45</div>
       <button id="infoBtn" aria-label="Scoring info">?</button>
       <div class="spacer"></div>
       <div class="box stat">
@@ -3199,10 +3199,19 @@ document.addEventListener('touchend', (e) => {
 // Vertical drag down: soft-drops in sync with your finger; releasing returns to normal fall.
 // Big upward flick: hard drop. Quick tap: rotate.
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-let axisLock = null, lastDragY = 0, minDragDy = 0, colsMoved = 0;
+// maxDragDy belongs here with the rest: it used to be an implicit global, which
+// a classic script tolerated but a module (always strict) throws on.
+let axisLock = null, lastDragY = 0, minDragDy = 0, maxDragDy = 0, colsMoved = 0;
 const AXIS_LOCK_THRESHOLD = 8;
 const HARD_DROP_SWIPE_UP = 55;
 const H_STEP_PX = 22;  // finger travel that equals one column of horizontal movement
+// Gesture timing comes from the event's own timestamp, not from the clock when
+// the handler happens to run. A busy frame can delay a handler by a hundred
+// milliseconds or more, and measuring that delay instead of the finger would
+// make quick taps read as long presses and stop rotating the piece.
+function evTime(e) {
+  return (e && typeof e.timeStamp === 'number' && e.timeStamp > 0) ? e.timeStamp : performance.now();
+}
 
 // --- Board orientation: base tilt + user orbit (two-finger) ---
 // just enough tilt that the dark top/side faces show as a sliver on every
@@ -3229,7 +3238,7 @@ canvas.addEventListener('touchstart', (e) => {
   const t = e.touches[0];
   touchStartX = t.clientX;
   touchStartY = t.clientY;
-  touchStartTime = Date.now();
+  touchStartTime = evTime(e);
   lastDragY = t.clientY;
   minDragDy = 0;
   maxDragDy = 0;
@@ -3301,7 +3310,7 @@ canvas.addEventListener('touchend', (e) => {
     return;
   }
   if (!running || paused) return;
-  const elapsed = Date.now() - touchStartTime;
+  const elapsed = evTime(e) - touchStartTime;
   if (axisLock === null && elapsed < 250) {
     // quick tap = rotate
     tryRotate();
