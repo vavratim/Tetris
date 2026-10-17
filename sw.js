@@ -1,7 +1,7 @@
 // Tetris service worker.
 // CACHE must change on every release — that is what makes an installed
 // Home Screen copy fetch the new build instead of serving the old one.
-const CACHE = 'tetris-v44';
+const CACHE = 'tetris-v45';
 
 const SHELL = [
   './',
